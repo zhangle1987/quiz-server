@@ -18,11 +18,32 @@ export const demosDir = process.env.DEMOS_DIR
 export const dataDir = path.join(serverRoot, "data");
 export const dataFilePath = path.join(serverRoot, "data", "question-banks.json");
 export const databasePath = path.join(dataDir, "quiz.sqlite");
-export const uploadDir = path.join(serverRoot, "uploads");
 export const publicDir = path.join(serverRoot, "public");
 export const adminPublicDir = path.join(publicDir, "admin");
+export const publicUploadDir = path.join(publicDir, "uploads");
+export const tempUploadDir = path.join(serverRoot, "tmp", "uploads");
 export const defaultPort = 3000;
 export const wechatAppId = process.env.WECHAT_APP_ID || "";
 export const wechatAppSecret = process.env.WECHAT_APP_SECRET || "";
-export const adminSessionSecret = process.env.ADMIN_SESSION_SECRET || "quiz-backend-local-admin-secret";
+export const adminSessionSecret = String(process.env.ADMIN_SESSION_SECRET || "").trim();
+export const adminInitialUsername = String(process.env.ADMIN_INITIAL_USERNAME || "").trim();
+export const adminInitialPassword = String(process.env.ADMIN_INITIAL_PASSWORD || "");
 export const publicOrigin = process.env.PUBLIC_ORIGIN || "";
+
+const LEGACY_DEFAULT_ADMIN_SESSION_SECRET = "quiz-backend-local-admin-secret";
+
+export function validateRuntimeConfig() {
+  const errors = [];
+
+  if (!adminSessionSecret) {
+    errors.push("缺少 ADMIN_SESSION_SECRET");
+  } else if (adminSessionSecret.length < 32) {
+    errors.push("ADMIN_SESSION_SECRET 长度至少需要 32 个字符");
+  } else if (adminSessionSecret === LEGACY_DEFAULT_ADMIN_SESSION_SECRET) {
+    errors.push("ADMIN_SESSION_SECRET 不能继续使用默认占位值");
+  }
+
+  if (errors.length) {
+    throw new Error(`运行配置不完整：${errors.join("；")}`);
+  }
+}

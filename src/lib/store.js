@@ -2,10 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  adminInitialPassword,
+  adminInitialUsername,
   dataDir,
   dataFilePath,
   databasePath,
-  uploadDir,
+  publicUploadDir,
+  tempUploadDir,
 } from "../config.js";
 import { hashPassword, verifyPassword } from "./adminAuth.js";
 
@@ -29,11 +32,6 @@ const DEFAULT_BROKER = {
   isDefault: true,
 };
 
-const DEFAULT_ADMIN = {
-  username: "admin",
-  password: "admin",
-};
-
 let database;
 
 function now() {
@@ -42,7 +40,8 @@ function now() {
 
 function ensureDirectories() {
   fs.mkdirSync(dataDir, { recursive: true });
-  fs.mkdirSync(uploadDir, { recursive: true });
+  fs.mkdirSync(publicUploadDir, { recursive: true });
+  fs.mkdirSync(tempUploadDir, { recursive: true });
 }
 
 function parseJson(value, fallback) {
@@ -204,6 +203,32 @@ function serializeAdminRow(row) {
   };
 }
 
+function getInitialAdminCredentials() {
+  const username = String(adminInitialUsername || "").trim();
+  const password = String(adminInitialPassword || "");
+
+  if (!username && !password) {
+    return null;
+  }
+
+  if (!username || !password) {
+    throw new Error("请在 .env 中同时设置 ADMIN_INITIAL_USERNAME 和 ADMIN_INITIAL_PASSWORD");
+  }
+
+  if (password.trim().length < 8) {
+    throw new Error("ADMIN_INITIAL_PASSWORD 长度至少需要 8 个字符");
+  }
+
+  if (password.trim() === username) {
+    throw new Error("ADMIN_INITIAL_PASSWORD 不能与 ADMIN_INITIAL_USERNAME 相同");
+  }
+
+  return {
+    username,
+    password,
+  };
+}
+
 function getDb() {
   if (!database) {
     ensureDirectories();
@@ -259,7 +284,7 @@ function getDb() {
     seedConfig();
     ensurePaperSchema();
     migrateLegacyData();
-    seedDefaultAdmin();
+    ensureAdminBootstrap();
     ensureDefaultBrokerInvariant();
   }
 
@@ -356,22 +381,66 @@ function migrateLegacyData() {
   }
 }
 
-function seedDefaultAdmin() {
+function ensureAdminBootstrap() {
   const db = getDb();
-  const count = db.prepare("SELECT COUNT(*) AS count FROM admins").get().count;
-  if (count) {
+  const admins = db.prepare(`
+    SELECT *
+    FROM admins
+    ORDER BY created_at ASC, id ASC
+  `).all();
+  const initialAdmin = getInitialAdminCredentials();
+
+  if (!admins.length) {
+    if (!initialAdmin) {
+      throw new Error("首次启动前，请在 .env 中设置 ADMIN_INITIAL_USERNAME 和 ADMIN_INITIAL_PASSWORD");
+    }
+
+    const timestamp = now();
+    db.prepare(`
+      INSERT INTO admins (username, password_hash, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+    `).run(
+      initialAdmin.username,
+      hashPassword(initialAdmin.password),
+      timestamp,
+      timestamp,
+    );
     return;
+  }
+
+  const legacyDefaultAdmin = admins.find((admin) => (
+    admin.username === "admin" && verifyPassword("admin", admin.password_hash)
+  ));
+
+  if (!legacyDefaultAdmin) {
+    return;
+  }
+
+  if (!initialAdmin) {
+    throw new Error(
+      "检测到旧的默认管理员 admin/admin，请在 .env 中设置 ADMIN_INITIAL_USERNAME 和 ADMIN_INITIAL_PASSWORD 后重启服务完成迁移",
+    );
+  }
+
+  const usernameConflict = admins.find((admin) => (
+    admin.id !== legacyDefaultAdmin.id && admin.username === initialAdmin.username
+  ));
+  if (usernameConflict) {
+    throw new Error("ADMIN_INITIAL_USERNAME 已被现有管理员占用，请换一个账号名");
   }
 
   const timestamp = now();
   db.prepare(`
-    INSERT INTO admins (username, password_hash, created_at, updated_at)
-    VALUES (?, ?, ?, ?)
+    UPDATE admins
+    SET username = ?,
+        password_hash = ?,
+        updated_at = ?
+    WHERE id = ?
   `).run(
-    DEFAULT_ADMIN.username,
-    hashPassword(DEFAULT_ADMIN.password),
+    initialAdmin.username,
+    hashPassword(initialAdmin.password),
     timestamp,
-    timestamp,
+    legacyDefaultAdmin.id,
   );
 }
 

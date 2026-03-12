@@ -9,9 +9,11 @@ import {
   databasePath,
   defaultPort,
   demosDir,
+  publicUploadDir,
   publicOrigin,
   publicDir,
-  uploadDir,
+  tempUploadDir,
+  validateRuntimeConfig,
 } from "./config.js";
 import {
   authenticateAdmin,
@@ -45,17 +47,6 @@ import {
 
 const app = express();
 app.set("trust proxy", true);
-const upload = multer({
-  storage: multer.diskStorage({
-    destination(_req, _file, callback) {
-      callback(null, uploadDir);
-    },
-    filename(_req, file, callback) {
-      const extension = path.extname(file.originalname || "") || "";
-      callback(null, `${Date.now()}-${crypto.randomUUID()}${extension}`);
-    },
-  }),
-});
 
 app.use(cors());
 app.use(express.json({ limit: "12mb" }));
@@ -66,7 +57,7 @@ app.use("/api", (_req, res, next) => {
   res.setHeader("Expires", "0");
   next();
 });
-app.use("/uploads", express.static(uploadDir));
+app.use("/uploads", express.static(publicUploadDir));
 app.use("/admin/assets", express.static(adminPublicDir));
 app.get("/:fileName", asyncHandler(async (req, res, next) => {
   const fileName = path.basename(String(req.params.fileName || "").trim());
@@ -90,6 +81,70 @@ function asyncHandler(handler) {
     Promise.resolve(handler(req, res, next)).catch(next);
   };
 }
+
+function createHttpError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function createUploadStorage(destination, fallbackExtension = "") {
+  return multer.diskStorage({
+    destination(_req, _file, callback) {
+      callback(null, destination);
+    },
+    filename(_req, file, callback) {
+      const extension = path.extname(file.originalname || "").toLowerCase() || fallbackExtension;
+      callback(null, `${Date.now()}-${crypto.randomUUID()}${extension}`);
+    },
+  });
+}
+
+function createUploadMiddleware({
+  destination,
+  fallbackExtension = "",
+  allowedMimeTypes,
+  allowedExtensions,
+  fileSizeLimit,
+  fileDescription,
+}) {
+  return multer({
+    storage: createUploadStorage(destination, fallbackExtension),
+    limits: {
+      fileSize: fileSizeLimit,
+    },
+    fileFilter(_req, file, callback) {
+      const extension = path.extname(String(file.originalname || "")).toLowerCase();
+      const mimeType = String(file.mimetype || "").toLowerCase();
+      const isAllowedExtension = allowedExtensions.includes(extension);
+      const isAllowedMimeType = allowedMimeTypes.includes(mimeType);
+
+      if (!isAllowedExtension || !isAllowedMimeType) {
+        callback(createHttpError(`仅支持上传${fileDescription}`));
+        return;
+      }
+
+      callback(null, true);
+    },
+  });
+}
+
+const pdfUpload = createUploadMiddleware({
+  destination: tempUploadDir,
+  fallbackExtension: ".pdf",
+  allowedMimeTypes: ["application/pdf"],
+  allowedExtensions: [".pdf"],
+  fileSizeLimit: 20 * 1024 * 1024,
+  fileDescription: "PDF 文件",
+});
+
+const imageUpload = createUploadMiddleware({
+  destination: publicUploadDir,
+  allowedMimeTypes: ["image/png", "image/jpeg", "image/webp"],
+  allowedExtensions: [".png", ".jpg", ".jpeg", ".webp"],
+  fileSizeLimit: 5 * 1024 * 1024,
+  fileDescription: "PNG、JPG、JPEG 或 WebP 图片",
+});
 
 function sanitizePaper(paper) {
   return {
@@ -157,19 +212,26 @@ function getAdminSession(req) {
   return parseAdminSessionToken(cookies[ADMIN_SESSION_COOKIE]);
 }
 
-function setAdminCookie(res, admin) {
+function shouldUseSecureAdminCookie(req) {
+  const forwardedProto = String(req.get("x-forwarded-proto") || "").split(",")[0].trim().toLowerCase();
+  return Boolean(req.secure || forwardedProto === "https");
+}
+
+function setAdminCookie(req, res, admin) {
   const session = createAdminSessionToken(admin);
+  const secureFlag = shouldUseSecureAdminCookie(req) ? "; Secure" : "";
   res.setHeader(
     "Set-Cookie",
-    `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(session.token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${session.maxAge}`,
+    `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(session.token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${session.maxAge}${secureFlag}`,
   );
   return session;
 }
 
-function clearAdminCookie(res) {
+function clearAdminCookie(req, res) {
+  const secureFlag = shouldUseSecureAdminCookie(req) ? "; Secure" : "";
   res.setHeader(
     "Set-Cookie",
-    `${ADMIN_SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`,
+    `${ADMIN_SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`,
   );
 }
 
@@ -177,7 +239,7 @@ function requireAdmin(req, res, next) {
   const session = getAdminSession(req);
   const admin = session ? getAdminById(session.adminId) : null;
   if (!admin) {
-    clearAdminCookie(res);
+    clearAdminCookie(req, res);
     res.status(401).json({ message: "请先登录管理员账号" });
     return;
   }
@@ -457,12 +519,12 @@ app.post("/admin/api/login", (req, res) => {
   const { username, password } = req.body || {};
   const admin = authenticateAdmin(username, password);
   if (!admin) {
-    clearAdminCookie(res);
+    clearAdminCookie(req, res);
     res.status(401).json({ message: "账号或密码错误" });
     return;
   }
 
-  const session = setAdminCookie(res, admin);
+  const session = setAdminCookie(req, res, admin);
   res.json({
     message: "登录成功",
     admin: {
@@ -481,7 +543,7 @@ app.get("/admin/api/session", requireAdmin, (req, res) => {
 });
 
 app.post("/admin/api/logout", (_req, res) => {
-  clearAdminCookie(res);
+  clearAdminCookie(_req, res);
   res.json({ message: "已退出登录" });
 });
 
@@ -551,37 +613,41 @@ adminApi.post("/import-demos", asyncHandler(async (_req, res) => {
   });
 }));
 
-adminApi.post("/upload-pdf", upload.single("pdf"), asyncHandler(async (req, res) => {
+adminApi.post("/upload-pdf", pdfUpload.single("pdf"), asyncHandler(async (req, res) => {
   if (!req.file) {
     res.status(400).json({ message: "请上传 PDF 文件" });
     return;
   }
 
-  const sourceLabel = decodeUploadedName(req.file.originalname);
-  const parsedPaper = await parsePdfToPaper(req.file.path, sourceLabel);
-  const replacePaperId = String(req.body?.replacePaperId || "").trim();
-  const existingPaper = replacePaperId ? getPaper(replacePaperId) : null;
-  const paper = replacePaperId
-    ? createOrReplacePaper(
-      {
+  try {
+    const sourceLabel = decodeUploadedName(req.file.originalname);
+    const parsedPaper = await parsePdfToPaper(req.file.path, sourceLabel);
+    const replacePaperId = String(req.body?.replacePaperId || "").trim();
+    const existingPaper = replacePaperId ? getPaper(replacePaperId) : null;
+    const paper = replacePaperId
+      ? createOrReplacePaper(
+        {
+          ...parsedPaper,
+          id: replacePaperId,
+          quizConfig: existingPaper?.quizConfig || parsedPaper.quizConfig,
+        },
+        { replacePaperId },
+      )
+      : upsertPaper({
         ...parsedPaper,
-        id: replacePaperId,
-        quizConfig: existingPaper?.quizConfig || parsedPaper.quizConfig,
-      },
-      { replacePaperId },
-    )
-    : upsertPaper({
-      ...parsedPaper,
-      id: `${parsedPaper.id}-${crypto.randomUUID().slice(0, 8)}`,
-    });
+        id: `${parsedPaper.id}-${crypto.randomUUID().slice(0, 8)}`,
+      });
 
-  res.json({
-    message: replacePaperId ? "题库已用 PDF 更新" : "PDF 上传并导入成功",
-    paper,
-  });
+    res.json({
+      message: replacePaperId ? "题库已用 PDF 更新" : "PDF 上传并导入成功",
+      paper,
+    });
+  } finally {
+    await fs.unlink(req.file.path).catch(() => {});
+  }
 }));
 
-adminApi.post("/upload-image", upload.single("file"), (req, res) => {
+adminApi.post("/upload-image", imageUpload.single("file"), (req, res) => {
   if (!req.file) {
     res.status(400).json({ message: "请上传图片文件" });
     return;
@@ -593,7 +659,7 @@ adminApi.post("/upload-image", upload.single("file"), (req, res) => {
     file: {
       path: relativePath,
       url: toAbsoluteUrl(req, relativePath),
-      name: req.file.originalname,
+      name: decodeUploadedName(req.file.originalname),
     },
   });
 });
@@ -634,7 +700,7 @@ adminApi.get("/settings/admin", (req, res) => {
 
 adminApi.put("/settings/admin", (req, res) => {
   const admin = updateAdminCredentials(req.admin.id, req.body || {});
-  const session = setAdminCookie(res, admin);
+  const session = setAdminCookie(req, res, admin);
   res.json({
     message: "管理员信息已更新",
     admin: {
@@ -655,13 +721,25 @@ app.use("/admin/api", adminApi);
 
 app.use((error, _req, res, _next) => {
   console.error(error);
-  res.status(500).json({
-    message: error instanceof Error ? error.message : "服务端异常",
+  if (error instanceof multer.MulterError) {
+    const message = error.code === "LIMIT_FILE_SIZE"
+      ? "上传文件过大"
+      : "上传文件不符合要求";
+    res.status(400).json({ message });
+    return;
+  }
+
+  const statusCode = Number(error?.statusCode) || 500;
+  res.status(statusCode).json({
+    message: statusCode >= 500
+      ? "服务端异常"
+      : (error instanceof Error ? error.message : "请求无效"),
   });
 });
 
 async function start() {
   const importOnly = process.argv.includes("--import-only");
+  validateRuntimeConfig();
 
   if (importOnly) {
     initStore();
