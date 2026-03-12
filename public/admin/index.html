@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>后台管理</title>
+    <link rel="stylesheet" href="/admin/assets/admin.css" />
+  </head>
+  <body class="admin-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand__eyebrow">Quiz Admin</div>
+        <div class="brand__title">后台管理</div>
+      </div>
+
+      <nav class="menu">
+        <button class="menu__item menu__item--active" data-section="papers" type="button">题库</button>
+        <button class="menu__item" data-section="brokers" type="button">经纪人</button>
+        <button class="menu__item" data-section="admin" type="button">管理员</button>
+      </nav>
+
+      <div class="sidebar__footer">
+        <div id="admin-identity" class="identity-chip"></div>
+        <button id="logout-button" class="ghost-button ghost-button--block" type="button">退出登录</button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="workspace__header">
+        <div>
+          <div class="workspace__eyebrow">管理台</div>
+          <h1 id="section-title" class="workspace__title">题库管理</h1>
+        </div>
+        <div class="summary-row">
+          <div class="summary-card">
+            <div class="summary-card__label">题库数</div>
+            <div id="paper-count" class="summary-card__value">0</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-card__label">经纪人数</div>
+            <div id="broker-count" class="summary-card__value">0</div>
+          </div>
+        </div>
+      </header>
+
+      <section id="section-papers" class="section section--active">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">题库列表</h2>
+            <p class="section-desc">题库数量很少，直接全部列出。右侧可编辑完整 JSON，也支持上传 PDF 覆盖当前题库。</p>
+          </div>
+          <div class="button-row">
+            <button id="paper-new" class="ghost-button" type="button">新增题库</button>
+            <label class="primary-button file-button">
+              <span>上传 PDF</span>
+              <input id="paper-upload" type="file" accept="application/pdf" />
+            </label>
+            <button id="paper-import-demos" class="ghost-button" type="button">重导示例</button>
+          </div>
+        </div>
+
+        <div class="content-grid">
+          <div id="paper-list" class="list-panel"></div>
+          <div class="editor-panel">
+            <div class="editor-toolbar">
+              <span id="paper-editor-mode" class="mode-chip">新建题库</span>
+              <div class="button-row">
+                <button id="paper-save" class="primary-button" type="button">保存题库</button>
+                <button id="paper-delete" class="danger-button" type="button">删除题库</button>
+              </div>
+            </div>
+            <textarea id="paper-json" class="json-editor" spellcheck="false"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <section id="section-brokers" class="section">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">经纪人管理</h2>
+            <p class="section-desc">维护分享归因 ID、绑定 OpenID，以及结果页展示的微信二维码。</p>
+          </div>
+          <div class="button-row">
+            <button id="broker-new" class="ghost-button" type="button">新增经纪人</button>
+          </div>
+        </div>
+
+        <div class="content-grid">
+          <div id="broker-list" class="list-panel"></div>
+          <form id="broker-form" class="editor-panel form-panel">
+            <div class="form-field">
+              <span>经纪人 ID</span>
+              <input id="broker-id" name="brokerId" type="text" required />
+            </div>
+            <div class="form-field">
+              <span>经纪人名称</span>
+              <input id="broker-name" name="name" type="text" />
+            </div>
+            <div class="form-field">
+              <span>绑定 OpenID</span>
+              <input id="broker-openid" name="linkedOpenId" type="text" />
+            </div>
+            <div class="checkbox-row">
+              <label class="checkbox-field">
+                <input id="broker-enabled" type="checkbox" checked />
+                <span>启用</span>
+              </label>
+              <label class="checkbox-field">
+                <input id="broker-default" type="checkbox" />
+                <span>设为默认经纪人</span>
+              </label>
+            </div>
+            <div class="form-field">
+              <span>微信二维码</span>
+              <input id="broker-image" type="file" accept="image/*" />
+              <input id="broker-qr-path" type="hidden" />
+            </div>
+            <div id="broker-preview" class="image-preview image-preview--empty">暂未上传二维码</div>
+            <div class="button-row">
+              <button class="primary-button" type="submit">保存经纪人</button>
+              <button id="broker-delete" class="danger-button" type="button">删除经纪人</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section id="section-admin" class="section">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">管理员设置</h2>
+            <p class="section-desc">默认管理员已预置为 <code>admin / admin</code>，可在这里改账号和密码。</p>
+          </div>
+        </div>
+
+        <div class="single-panel">
+          <form id="admin-form" class="form-panel">
+            <div class="form-field">
+              <span>管理员账号</span>
+              <input id="admin-username" type="text" required />
+            </div>
+            <div class="form-field">
+              <span>新密码</span>
+              <input id="admin-password" type="password" placeholder="留空表示不修改密码" />
+            </div>
+            <div class="button-row">
+              <button class="primary-button" type="submit">保存管理员信息</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast"></div>
+    <script src="/admin/assets/app.js" defer></script>
+  </body>
+  </html>

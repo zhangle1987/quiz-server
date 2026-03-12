@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>后台登录</title>
+    <link rel="stylesheet" href="/admin/assets/admin.css" />
+  </head>
+  <body class="admin-body admin-body--login">
+    <main class="login-shell">
+      <section class="login-card">
+        <div class="login-eyebrow">Quiz Admin</div>
+        <h1 class="login-title">管理员登录</h1>
+        <p class="login-desc">登录后可管理题库、解析内容和经纪人二维码。</p>
+        <p class="login-hint">默认账号仅用于本地初始化：<code>admin / admin</code></p>
+        <form id="login-form" class="login-form">
+          <label class="form-field">
+            <span>账号</span>
+            <input id="username" name="username" type="text" autocomplete="username" required />
+          </label>
+          <label class="form-field">
+            <span>密码</span>
+            <input id="password" name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <button class="primary-button" type="submit">登录后台</button>
+        </form>
+        <p id="login-message" class="login-message"></p>
+      </section>
+    </main>
+    <script src="/admin/assets/login.js" defer></script>
+  </body>
+  </html>
