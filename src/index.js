@@ -60,6 +60,12 @@ const upload = multer({
 app.use(cors());
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
 app.use("/uploads", express.static(uploadDir));
 app.use("/admin/assets", express.static(adminPublicDir));
 app.get("/:fileName", asyncHandler(async (req, res, next) => {
@@ -91,6 +97,7 @@ function sanitizePaper(paper) {
     title: paper.title,
     sourceFile: paper.sourceFile,
     importedAt: paper.importedAt,
+    updatedAt: paper.updatedAt,
     questionCount: paper.questionCount,
     quizConfig: paper.quizConfig,
   };
