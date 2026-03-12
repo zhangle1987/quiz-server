@@ -16,6 +16,7 @@ npm run dev
 WECHAT_APP_ID=你的小程序AppID
 WECHAT_APP_SECRET=你的小程序AppSecret
 ADMIN_SESSION_SECRET=请替换成一串随机字符串
+PUBLIC_ORIGIN=https://你的域名
 ```
 
 项目已自带 `.env.example` 模板。修改 `.env` 后，重启服务端即可生效。

@@ -9,6 +9,7 @@ import {
   databasePath,
   defaultPort,
   demosDir,
+  publicOrigin,
   publicDir,
   uploadDir,
 } from "./config.js";
@@ -43,6 +44,7 @@ import {
 } from "./lib/adminAuth.js";
 
 const app = express();
+app.set("trust proxy", true);
 const upload = multer({
   storage: multer.diskStorage({
     destination(_req, _file, callback) {
@@ -189,7 +191,11 @@ function toAbsoluteUrl(req, value) {
     return value;
   }
 
-  const origin = `${req.protocol}://${req.get("host")}`;
+  const forwardedProto = String(req.get("x-forwarded-proto") || "").split(",")[0].trim();
+  const forwardedHost = String(req.get("x-forwarded-host") || "").split(",")[0].trim();
+  const normalizedPublicOrigin = String(publicOrigin || "").trim().replace(/\/+$/, "");
+  const origin = normalizedPublicOrigin
+    || (forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : `${req.protocol}://${req.get("host")}`);
   return new URL(value.replace(/^\.\//, "/"), origin).toString();
 }
 

@@ -25,3 +25,4 @@ export const defaultPort = 3000;
 export const wechatAppId = process.env.WECHAT_APP_ID || "";
 export const wechatAppSecret = process.env.WECHAT_APP_SECRET || "";
 export const adminSessionSecret = process.env.ADMIN_SESSION_SECRET || "quiz-backend-local-admin-secret";
+export const publicOrigin = process.env.PUBLIC_ORIGIN || "";
