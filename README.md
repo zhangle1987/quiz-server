@@ -10,7 +10,17 @@ npm run dev
 
 默认会从同级目录 `C:\Users\zhangle\WeChatProjects\miniprogram-1\demos` 读取示例 PDF。
 
-如需改路径，可以设置环境变量：
+微信登录和本地配置建议写在 `C:\Users\zhangle\WeChatProjects\quiz-backend\.env`：
+
+```env
+WECHAT_APP_ID=你的小程序AppID
+WECHAT_APP_SECRET=你的小程序AppSecret
+ADMIN_SESSION_SECRET=请替换成一串随机字符串
+```
+
+项目已自带 `.env.example` 模板。修改 `.env` 后，重启服务端即可生效。
+
+如需改路径，也可以继续设置这些环境变量：
 
 - `MINIPROGRAM_ROOT`
 - `DEMOS_DIR`

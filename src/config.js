@@ -1,10 +1,13 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const serverRoot = path.resolve(__dirname, "..");
+dotenv.config({ path: path.join(serverRoot, ".env") });
 
-export const serverRoot = path.resolve(__dirname, "..");
+export { serverRoot };
 export const workspaceRoot = path.resolve(serverRoot, "..");
 export const miniProgramRoot = process.env.MINIPROGRAM_ROOT
   ? path.resolve(serverRoot, process.env.MINIPROGRAM_ROOT)
