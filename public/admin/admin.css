@@ -374,6 +374,27 @@ body {
   margin-bottom: 14px;
 }
 
+.paper-config-panel {
+  margin-bottom: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel-soft);
+}
+
+.paper-config-panel__title {
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.paper-config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .image-preview {
   min-height: 240px;
   border: 1px dashed var(--border);
@@ -432,5 +453,9 @@ body {
   .content-grid {
     display: flex;
     flex-direction: column;
+  }
+
+  .paper-config-grid {
+    grid-template-columns: 1fr;
   }
 }

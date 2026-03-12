@@ -92,6 +92,7 @@ function sanitizePaper(paper) {
     sourceFile: paper.sourceFile,
     importedAt: paper.importedAt,
     questionCount: paper.questionCount,
+    quizConfig: paper.quizConfig,
   };
 }
 
@@ -333,7 +334,6 @@ app.get("/api/papers", (_req, res) => {
 
 app.get("/api/question-bank", (req, res) => {
   const paperId = req.query.paperId;
-  const requestedCount = Number(req.query.count);
   const papers = listPapers();
   const paper = getPaper(paperId) || getPaper(papers[0]?.id);
   if (!paper) {
@@ -341,9 +341,10 @@ app.get("/api/question-bank", (req, res) => {
     return;
   }
 
-  const count = Number.isFinite(requestedCount) && requestedCount > 0
-    ? Math.min(requestedCount, paper.questions.length)
-    : Math.min(getConfig().defaultQuestionCount, paper.questions.length);
+  const count = Math.min(
+    Number(paper.quizConfig?.questionCount) || getConfig().defaultQuestionCount,
+    paper.questions.length,
+  );
 
   const questions = shuffle(paper.questions)
     .slice(0, count)
@@ -376,7 +377,7 @@ app.get("/api/brokers/:brokerId", (req, res) => {
 });
 
 app.post("/api/quiz/grade", (req, res) => {
-  const { paperId, answers = [], brokerId } = req.body || {};
+  const { paperId, answers = [], questionIds = [], brokerId, submitMode = "manual" } = req.body || {};
   const paper = getPaper(paperId);
 
   if (!paper) {
@@ -384,14 +385,25 @@ app.post("/api/quiz/grade", (req, res) => {
     return;
   }
 
+  const normalizedQuestionIds = Array.isArray(questionIds)
+    ? questionIds.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (!normalizedQuestionIds.length) {
+    res.status(400).json({ message: "缺少题目集合，无法判分" });
+    return;
+  }
+
   const answerMap = new Map(
     answers.map((item) => [item.questionId, String(item.answer || "").toUpperCase()]),
   );
+  const questionMap = new Map(paper.questions.map((question) => [question.id, question]));
 
-  const resultItems = paper.questions
-    .filter((question) => answerMap.has(question.id))
+  const resultItems = normalizedQuestionIds
+    .map((questionId) => questionMap.get(questionId))
+    .filter(Boolean)
     .map((question) => {
-      const userAnswer = answerMap.get(question.id);
+      const userAnswer = answerMap.get(question.id) || "";
+      const isAnswered = Boolean(userAnswer);
       const isCorrect = userAnswer === question.answer;
       return {
         questionId: question.id,
@@ -400,6 +412,7 @@ app.post("/api/quiz/grade", (req, res) => {
         options: question.options,
         reference: question.reference,
         userAnswer,
+        isAnswered,
         correctAnswer: question.answer,
         isCorrect,
         explanation: question.explanation,
@@ -408,6 +421,10 @@ app.post("/api/quiz/grade", (req, res) => {
 
   const correctCount = resultItems.filter((item) => item.isCorrect).length;
   const total = resultItems.length;
+  const answeredCount = resultItems.filter((item) => item.isAnswered).length;
+  const unansweredCount = total - answeredCount;
+  const accuracy = total ? Math.round((correctCount / total) * 100) : 0;
+  const passThreshold = Number(paper.quizConfig?.passThreshold) || 70;
   const broker = getBrokerByBrokerId(brokerId) || getDefaultBroker();
 
   res.json({
@@ -415,9 +432,15 @@ app.post("/api/quiz/grade", (req, res) => {
     broker: sanitizeBroker(req, broker),
     summary: {
       total,
+      answeredCount,
+      unansweredCount,
       correctCount,
       wrongCount: total - correctCount,
-      score: total ? Math.round((correctCount / total) * 100) : 0,
+      score: accuracy,
+      accuracy,
+      passThreshold,
+      passed: accuracy >= passThreshold,
+      autoSubmitted: submitMode === "timeout",
     },
     results: resultItems,
   });
@@ -530,11 +553,13 @@ adminApi.post("/upload-pdf", upload.single("pdf"), asyncHandler(async (req, res)
   const sourceLabel = decodeUploadedName(req.file.originalname);
   const parsedPaper = await parsePdfToPaper(req.file.path, sourceLabel);
   const replacePaperId = String(req.body?.replacePaperId || "").trim();
+  const existingPaper = replacePaperId ? getPaper(replacePaperId) : null;
   const paper = replacePaperId
     ? createOrReplacePaper(
       {
         ...parsedPaper,
         id: replacePaperId,
+        quizConfig: existingPaper?.quizConfig || parsedPaper.quizConfig,
       },
       { replacePaperId },
     )

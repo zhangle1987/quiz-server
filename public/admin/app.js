@@ -3,6 +3,11 @@ function createEmptyPaperTemplate() {
     id: `paper-${Date.now()}`,
     title: "新题库",
     sourceFile: "manual.json",
+    quizConfig: {
+      durationMinutes: 120,
+      questionCount: 75,
+      passThreshold: 70,
+    },
     questions: [
       {
         id: `question-${Date.now()}`,
@@ -36,6 +41,12 @@ function createEmptyBrokerForm() {
   };
 }
 
+function createPaperEditorPayload(paper) {
+  const payload = { ...paper };
+  delete payload.quizConfig;
+  return payload;
+}
+
 const state = {
   activeSection: "papers",
   overview: null,
@@ -61,6 +72,9 @@ const elements = {
   brokerCount: document.getElementById("broker-count"),
   paperList: document.getElementById("paper-list"),
   paperEditorMode: document.getElementById("paper-editor-mode"),
+  paperDurationMinutes: document.getElementById("paper-duration-minutes"),
+  paperQuestionCount: document.getElementById("paper-question-count"),
+  paperPassThreshold: document.getElementById("paper-pass-threshold"),
   paperJson: document.getElementById("paper-json"),
   paperNew: document.getElementById("paper-new"),
   paperSave: document.getElementById("paper-save"),
@@ -166,7 +180,10 @@ function syncBrokerForm() {
 function setPaperEditor(paper, mode = "edit") {
   state.paperMode = mode;
   state.selectedPaperId = mode === "edit" ? paper.id : "";
-  state.paperJson = JSON.stringify(paper, null, 2);
+  state.paperJson = JSON.stringify(createPaperEditorPayload(paper), null, 2);
+  elements.paperDurationMinutes.value = String(paper.quizConfig?.durationMinutes || "");
+  elements.paperQuestionCount.value = String(paper.quizConfig?.questionCount || paper.questionCount || "");
+  elements.paperPassThreshold.value = String(paper.quizConfig?.passThreshold || "");
   elements.paperJson.value = state.paperJson;
   elements.paperEditorMode.textContent = mode === "edit" ? `编辑题库: ${paper.title}` : "新增题库";
 }
@@ -176,7 +193,8 @@ function renderPaperList() {
   elements.paperList.innerHTML = papers.map((paper) => `
     <article class="list-card ${state.selectedPaperId === paper.id ? "list-card--active" : ""}" data-action="select-paper" data-id="${paper.id}">
       <div class="list-card__title">${paper.title}</div>
-      <div class="list-card__meta">${paper.questionCount} 题</div>
+      <div class="list-card__meta">题库共 ${paper.questionCount} 题，考试抽取 ${paper.quizConfig?.questionCount || paper.questionCount} 题</div>
+      <div class="list-card__meta">限时 ${paper.quizConfig?.durationMinutes || 0} 分钟，合格线 ${paper.quizConfig?.passThreshold || 70}%</div>
       <div class="list-card__meta">来源：${paper.sourceFile || "手动编辑"}</div>
     </article>
   `).join("") || '<article class="list-card"><div class="list-card__title">暂无题库</div></article>';
@@ -245,7 +263,19 @@ function selectBrokerById(brokerId) {
 
 function parsePaperJson() {
   try {
-    return JSON.parse(elements.paperJson.value);
+    const paper = JSON.parse(elements.paperJson.value);
+    const durationMinutes = Number(elements.paperDurationMinutes.value);
+    const questionCount = Number(elements.paperQuestionCount.value);
+    const passThreshold = Number(elements.paperPassThreshold.value);
+
+    paper.quizConfig = {
+      durationMinutes: Number.isFinite(durationMinutes) && durationMinutes > 0 ? Math.round(durationMinutes) : 60,
+      questionCount: Number.isFinite(questionCount) && questionCount > 0 ? Math.round(questionCount) : 1,
+      passThreshold: Number.isFinite(passThreshold)
+        ? Math.max(0, Math.min(100, Math.round(passThreshold)))
+        : 70,
+    };
+    return paper;
   } catch {
     throw new Error("题库 JSON 格式不合法");
   }

@@ -14,6 +14,12 @@ const DEFAULT_CONFIG = {
   questionCountOptions: [10, 20, 30],
 };
 
+const DEFAULT_PAPER_QUIZ_CONFIG = {
+  durationMinutes: 60,
+  questionCount: 20,
+  passThreshold: 70,
+};
+
 const DEFAULT_BROKER = {
   brokerId: "default-broker",
   name: "默认经纪人",
@@ -63,6 +69,46 @@ function normalizeOption(option, index) {
   };
 }
 
+function normalizeQuizConfig(input = {}, availableQuestionCount = 0) {
+  const normalizedAvailableQuestionCount = Number.isFinite(Number(availableQuestionCount))
+    ? Math.max(0, Number(availableQuestionCount))
+    : 0;
+  const rawQuestionCount = Number(
+    input.questionCount
+      ?? input.quizQuestionCount
+      ?? DEFAULT_PAPER_QUIZ_CONFIG.questionCount,
+  );
+  const rawDurationMinutes = Number(
+    input.durationMinutes
+      ?? input.limitMinutes
+      ?? DEFAULT_PAPER_QUIZ_CONFIG.durationMinutes,
+  );
+  const rawPassThreshold = Number(
+    input.passThreshold
+      ?? input.passLine
+      ?? DEFAULT_PAPER_QUIZ_CONFIG.passThreshold,
+  );
+
+  const fallbackQuestionCount = normalizedAvailableQuestionCount || DEFAULT_PAPER_QUIZ_CONFIG.questionCount;
+  const durationMinutes = Number.isFinite(rawDurationMinutes) && rawDurationMinutes > 0
+    ? Math.round(rawDurationMinutes)
+    : DEFAULT_PAPER_QUIZ_CONFIG.durationMinutes;
+  const questionCount = Number.isFinite(rawQuestionCount) && rawQuestionCount > 0
+    ? Math.round(rawQuestionCount)
+    : fallbackQuestionCount;
+  const passThreshold = Number.isFinite(rawPassThreshold)
+    ? Math.max(0, Math.min(100, Math.round(rawPassThreshold)))
+    : DEFAULT_PAPER_QUIZ_CONFIG.passThreshold;
+
+  return {
+    durationMinutes,
+    questionCount: normalizedAvailableQuestionCount
+      ? Math.min(questionCount, normalizedAvailableQuestionCount)
+      : questionCount,
+    passThreshold,
+  };
+}
+
 function normalizeQuestion(question, index) {
   const options = Array.isArray(question.options)
     ? question.options
@@ -88,6 +134,10 @@ function normalizePaper(paper) {
   const normalizedQuestions = Array.isArray(paper.questions)
     ? paper.questions.map((question, index) => normalizeQuestion(question, index))
     : [];
+  const quizConfig = normalizeQuizConfig(
+    paper.quizConfig || paper.examConfig || paper,
+    normalizedQuestions.length,
+  );
 
   return {
     id: String(paper.id || "").trim(),
@@ -96,6 +146,7 @@ function normalizePaper(paper) {
     importedAt: String(paper.importedAt || now()),
     updatedAt: String(paper.updatedAt || now()),
     questionCount: normalizedQuestions.length,
+    quizConfig,
     questions: normalizedQuestions,
   };
 }
@@ -108,6 +159,10 @@ function serializePaperRow(row, includeQuestions = false) {
     importedAt: row.imported_at,
     updatedAt: row.updated_at,
     questionCount: row.question_count,
+    quizConfig: normalizeQuizConfig(
+      parseJson(row.quiz_config_json, DEFAULT_PAPER_QUIZ_CONFIG),
+      row.question_count,
+    ),
   };
 
   if (includeQuestions) {
@@ -165,6 +220,7 @@ function getDb() {
         source_file TEXT NOT NULL DEFAULT '',
         imported_at TEXT NOT NULL,
         question_count INTEGER NOT NULL DEFAULT 0,
+        quiz_config_json TEXT NOT NULL DEFAULT '{"durationMinutes":60,"questionCount":20,"passThreshold":70}',
         questions_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -201,12 +257,26 @@ function getDb() {
     `);
 
     seedConfig();
+    ensurePaperSchema();
     migrateLegacyData();
     seedDefaultAdmin();
     ensureDefaultBrokerInvariant();
   }
 
   return database;
+}
+
+function ensurePaperSchema() {
+  const db = getDb();
+  const columns = db.prepare("PRAGMA table_info(papers)").all();
+  const hasQuizConfigColumn = columns.some((column) => column.name === "quiz_config_json");
+  if (!hasQuizConfigColumn) {
+    const defaultValue = JSON.stringify(DEFAULT_PAPER_QUIZ_CONFIG).replace(/'/g, "''");
+    db.exec(`
+      ALTER TABLE papers
+      ADD COLUMN quiz_config_json TEXT NOT NULL DEFAULT '${defaultValue}'
+    `);
+  }
 }
 
 function runInTransaction(callback) {
@@ -437,14 +507,16 @@ export function upsertPaper(paperInput) {
       source_file,
       imported_at,
       question_count,
+      quiz_config_json,
       questions_json,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       title = excluded.title,
       source_file = excluded.source_file,
       imported_at = excluded.imported_at,
       question_count = excluded.question_count,
+      quiz_config_json = excluded.quiz_config_json,
       questions_json = excluded.questions_json,
       updated_at = excluded.updated_at
   `).run(
@@ -453,6 +525,7 @@ export function upsertPaper(paperInput) {
     normalizedPaper.sourceFile,
     importedAt,
     normalizedPaper.questions.length,
+    JSON.stringify(normalizedPaper.quizConfig),
     JSON.stringify(normalizedPaper.questions),
     updatedAt,
   );
@@ -489,15 +562,17 @@ export function replacePapers(papers = []) {
           source_file,
           imported_at,
           question_count,
+          quiz_config_json,
           questions_json,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         normalizedPaper.id,
         normalizedPaper.title,
         normalizedPaper.sourceFile,
         normalizedPaper.importedAt,
         normalizedPaper.questions.length,
+        JSON.stringify(normalizedPaper.quizConfig),
         JSON.stringify(normalizedPaper.questions),
         normalizedPaper.updatedAt,
       );

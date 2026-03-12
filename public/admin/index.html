@@ -47,7 +47,7 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">题库列表</h2>
-            <p class="section-desc">题库数量很少，直接全部列出。右侧可编辑完整 JSON，也支持上传 PDF 覆盖当前题库。</p>
+            <p class="section-desc">题库数量很少，直接全部列出。右侧可编辑完整 JSON，也支持上传 PDF 覆盖当前题库。考试配置通过上方表单维护，保存后直接写入数据库。</p>
           </div>
           <div class="button-row">
             <button id="paper-new" class="ghost-button" type="button">新增题库</button>
@@ -67,6 +67,23 @@
               <div class="button-row">
                 <button id="paper-save" class="primary-button" type="button">保存题库</button>
                 <button id="paper-delete" class="danger-button" type="button">删除题库</button>
+              </div>
+            </div>
+            <div class="paper-config-panel">
+              <div class="paper-config-panel__title">考试配置</div>
+              <div class="paper-config-grid">
+                <label class="form-field">
+                  <span>答题时长（分钟）</span>
+                  <input id="paper-duration-minutes" type="number" min="1" step="1" />
+                </label>
+                <label class="form-field">
+                  <span>抽题数量</span>
+                  <input id="paper-question-count" type="number" min="1" step="1" />
+                </label>
+                <label class="form-field">
+                  <span>合格线（%）</span>
+                  <input id="paper-pass-threshold" type="number" min="0" max="100" step="1" />
+                </label>
               </div>
             </div>
             <textarea id="paper-json" class="json-editor" spellcheck="false"></textarea>
