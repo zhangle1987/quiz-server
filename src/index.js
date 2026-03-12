@@ -9,6 +9,7 @@ import {
   databasePath,
   defaultPort,
   demosDir,
+  publicDir,
   uploadDir,
 } from "./config.js";
 import {
@@ -59,6 +60,22 @@ app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(uploadDir));
 app.use("/admin/assets", express.static(adminPublicDir));
+app.get("/:fileName", asyncHandler(async (req, res, next) => {
+  const fileName = path.basename(String(req.params.fileName || "").trim());
+  if (!fileName.toLowerCase().endsWith(".txt")) {
+    next();
+    return;
+  }
+
+  const filePath = path.join(publicDir, fileName);
+  try {
+    await fs.access(filePath);
+    res.type("text/plain; charset=utf-8");
+    res.sendFile(filePath);
+  } catch {
+    next();
+  }
+}));
 
 function asyncHandler(handler) {
   return (req, res, next) => {
