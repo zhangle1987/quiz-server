@@ -104,7 +104,7 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">中介人管理</h2>
-            <p class="section-desc">维护分享归因 ID、绑定 OpenID，以及结果页展示的微信二维码。</p>
+            <p class="section-desc">维护分享归因 ID、绑定 OpenID、结果页展示的微信二维码，以及可下载分享的小程序碼。</p>
           </div>
           <div class="button-row">
             <button id="broker-new" class="ghost-button" type="button">新增中介人</button>
@@ -142,6 +142,16 @@
               <input id="broker-qr-path" type="hidden" />
             </div>
             <div id="broker-preview" class="image-preview image-preview--empty">暂未上传二维码</div>
+            <div class="form-field">
+              <span>分享小程序碼</span>
+              <div class="button-row">
+                <button id="broker-generate-minicode" class="ghost-button" type="button">生成小程序碼</button>
+                <a id="broker-minicode-download" class="ghost-button link-button-shell" href="#" download hidden>下载小程序碼</a>
+              </div>
+              <div class="inline-note">需先填写并保存绑定 OpenID，才可生成专属小程序碼。</div>
+              <input id="broker-minicode-path" type="hidden" />
+            </div>
+            <div id="broker-minicode-preview" class="image-preview image-preview--empty">暂未生成小程序碼</div>
             <div class="button-row">
               <button class="primary-button" type="submit">保存中介人</button>
               <button id="broker-delete" class="danger-button" type="button">删除中介人</button>

@@ -37,6 +37,8 @@ function createEmptyBrokerForm() {
     linkedOpenId: "",
     qrImagePath: "",
     qrImageUrl: "",
+    miniProgramCodePath: "",
+    miniProgramCodeUrl: "",
     enabled: true,
     isDefault: false,
   };
@@ -126,6 +128,10 @@ const elements = {
   brokerImage: document.getElementById("broker-image"),
   brokerQrPath: document.getElementById("broker-qr-path"),
   brokerPreview: document.getElementById("broker-preview"),
+  brokerMiniCodeGenerate: document.getElementById("broker-generate-minicode"),
+  brokerMiniCodePath: document.getElementById("broker-minicode-path"),
+  brokerMiniCodePreview: document.getElementById("broker-minicode-preview"),
+  brokerMiniCodeDownload: document.getElementById("broker-minicode-download"),
   brokerNew: document.getElementById("broker-new"),
   brokerDelete: document.getElementById("broker-delete"),
   userTableBody: document.getElementById("user-table-body"),
@@ -217,6 +223,7 @@ function syncBrokerForm() {
   elements.brokerEnabled.checked = Boolean(state.brokerForm.enabled);
   elements.brokerDefault.checked = Boolean(state.brokerForm.isDefault);
   elements.brokerQrPath.value = state.brokerForm.qrImagePath || "";
+  elements.brokerMiniCodePath.value = state.brokerForm.miniProgramCodePath || "";
 
   if (state.brokerForm.qrImageUrl) {
     elements.brokerPreview.className = "image-preview";
@@ -225,6 +232,20 @@ function syncBrokerForm() {
     elements.brokerPreview.className = "image-preview image-preview--empty";
     elements.brokerPreview.textContent = "暂未上传二维码";
   }
+
+  if (state.brokerForm.miniProgramCodeUrl) {
+    elements.brokerMiniCodePreview.className = "image-preview";
+    elements.brokerMiniCodePreview.innerHTML = `<img src="${state.brokerForm.miniProgramCodeUrl}" alt="小程序碼" />`;
+    elements.brokerMiniCodeDownload.hidden = false;
+    elements.brokerMiniCodeDownload.href = state.brokerForm.miniProgramCodeUrl;
+  } else {
+    elements.brokerMiniCodePreview.className = "image-preview image-preview--empty";
+    elements.brokerMiniCodePreview.textContent = "暂未生成小程序碼";
+    elements.brokerMiniCodeDownload.hidden = true;
+    elements.brokerMiniCodeDownload.removeAttribute("href");
+  }
+
+  elements.brokerMiniCodeGenerate.disabled = !state.selectedBrokerId || !String(state.brokerForm.linkedOpenId || "").trim();
 }
 
 function syncUserForm() {
@@ -282,6 +303,7 @@ function renderBrokerList() {
       <div class="list-card__title">${broker.name || broker.brokerId}</div>
       <div class="list-card__meta">ID: ${broker.brokerId}</div>
       <div class="list-card__meta">OpenID: ${broker.linkedOpenId || "未绑定"}</div>
+      <div class="list-card__meta">小程序碼：${broker.miniProgramCodeUrl ? "已生成" : "未生成"}</div>
       <div class="tag-row">
         ${broker.isDefault ? '<span class="tag tag--primary">默认</span>' : ""}
         <span class="tag ${broker.enabled ? "tag--success" : "tag--danger"}">${broker.enabled ? "启用" : "停用"}</span>
@@ -538,6 +560,7 @@ async function saveBroker(event) {
     name: elements.brokerName.value.trim(),
     linkedOpenId: elements.brokerOpenId.value.trim(),
     qrImagePath: elements.brokerQrPath.value.trim(),
+    miniProgramCodePath: elements.brokerMiniCodePath.value.trim(),
     enabled: elements.brokerEnabled.checked,
     isDefault: elements.brokerDefault.checked,
   };
@@ -590,6 +613,30 @@ async function uploadBrokerImage(file) {
   state.brokerForm.qrImageUrl = response.file.url;
   syncBrokerForm();
   showToast("二维码上传成功");
+}
+
+async function generateBrokerMiniCode() {
+  if (!state.selectedBrokerId) {
+    showToast("请先保存中介人资料");
+    return;
+  }
+
+  if (!String(state.brokerForm.linkedOpenId || "").trim()) {
+    showToast("请先填写并保存绑定 OpenID");
+    return;
+  }
+
+  const response = await requestJson(`/admin/api/brokers/${encodeURIComponent(state.selectedBrokerId)}/generate-minicode`, {
+    method: "POST",
+  });
+
+  state.brokerForm = {
+    ...state.brokerForm,
+    ...response.broker,
+  };
+  await loadOverview();
+  syncBrokerForm();
+  showToast(response.message || "小程序碼已生成");
 }
 
 async function updateUserFriendStatus(userId, friendStatus, options = {}) {
@@ -769,6 +816,10 @@ elements.brokerImage.addEventListener("change", (event) => {
 
   uploadBrokerImage(file).catch((error) => showToast(error.message));
   event.target.value = "";
+});
+
+elements.brokerMiniCodeGenerate.addEventListener("click", () => {
+  generateBrokerMiniCode().catch((error) => showToast(error.message));
 });
 
 elements.userTableBody.addEventListener("change", (event) => {

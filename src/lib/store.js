@@ -28,6 +28,7 @@ const DEFAULT_BROKER = {
   brokerId: "default-broker",
   name: "默认中介人",
   qrImagePath: "",
+  miniProgramCodePath: "",
   linkedOpenId: "",
   enabled: true,
   isDefault: true,
@@ -197,6 +198,7 @@ function serializeBrokerRow(row) {
     brokerId: row.broker_id,
     name: row.name,
     qrImagePath: row.qr_image_url || "",
+    miniProgramCodePath: row.mini_program_code_url || "",
     linkedOpenId: row.linked_openid || "",
     enabled: Boolean(row.enabled),
     isDefault: Boolean(row.is_default),
@@ -313,6 +315,7 @@ function getDb() {
         broker_id TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL,
         qr_image_url TEXT NOT NULL DEFAULT '',
+        mini_program_code_url TEXT NOT NULL DEFAULT '',
         linked_openid TEXT NOT NULL DEFAULT '',
         enabled INTEGER NOT NULL DEFAULT 1,
         is_default INTEGER NOT NULL DEFAULT 0,
@@ -353,6 +356,7 @@ function getDb() {
     seedConfig();
     ensurePaperSchema();
     ensureUserSchema();
+    ensureBrokerSchema();
     migrateLegacyData();
     ensureAdminBootstrap();
     ensureDefaultBrokerInvariant();
@@ -403,6 +407,16 @@ function ensureUserSchema() {
       ELSE updated_at
     END
   `).run();
+}
+
+function ensureBrokerSchema() {
+  const db = getDb();
+  const columns = db.prepare("PRAGMA table_info(brokers)").all();
+  const columnNames = new Set(columns.map((column) => column.name));
+
+  if (!columnNames.has("mini_program_code_url")) {
+    db.exec("ALTER TABLE brokers ADD COLUMN mini_program_code_url TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 function runInTransaction(callback) {
@@ -560,16 +574,18 @@ function ensureDefaultBrokerInvariant() {
         broker_id,
         name,
         qr_image_url,
+        mini_program_code_url,
         linked_openid,
         enabled,
         is_default,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       DEFAULT_BROKER.brokerId,
       DEFAULT_BROKER.name,
       DEFAULT_BROKER.qrImagePath,
+      DEFAULT_BROKER.miniProgramCodePath,
       DEFAULT_BROKER.linkedOpenId,
       DEFAULT_BROKER.enabled ? 1 : 0,
       1,
@@ -949,6 +965,8 @@ export function saveBroker(input = {}) {
   const brokerId = String(input.brokerId || "").trim();
   const name = String(input.name || "").trim() || brokerId;
   const qrImagePath = String(input.qrImagePath || "").trim();
+  const hasMiniProgramCodePath = Object.prototype.hasOwnProperty.call(input, "miniProgramCodePath");
+  const inputMiniProgramCodePath = hasMiniProgramCodePath ? String(input.miniProgramCodePath || "").trim() : null;
   const linkedOpenId = String(input.linkedOpenId || "").trim();
   const enabled = input.enabled === false || input.enabled === 0 ? 0 : 1;
   const isDefault = Boolean(input.isDefault);
@@ -970,11 +988,18 @@ export function saveBroker(input = {}) {
         throw new Error("中介人不存在");
       }
 
+      const miniProgramCodePath = existing.broker_id !== brokerId
+        ? ""
+        : (inputMiniProgramCodePath === null
+          ? String(existing.mini_program_code_url || "").trim()
+          : inputMiniProgramCodePath);
+
       db.prepare(`
         UPDATE brokers
         SET broker_id = ?,
             name = ?,
             qr_image_url = ?,
+            mini_program_code_url = ?,
             linked_openid = ?,
             enabled = ?,
             is_default = ?,
@@ -984,6 +1009,7 @@ export function saveBroker(input = {}) {
         brokerId,
         name,
         qrImagePath,
+        miniProgramCodePath,
         linkedOpenId,
         enabled,
         isDefault ? 1 : 0,
@@ -991,21 +1017,24 @@ export function saveBroker(input = {}) {
         internalId,
       );
     } else {
+      const miniProgramCodePath = inputMiniProgramCodePath === null ? "" : inputMiniProgramCodePath;
       const result = db.prepare(`
         INSERT INTO brokers (
           broker_id,
           name,
           qr_image_url,
+          mini_program_code_url,
           linked_openid,
           enabled,
           is_default,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         brokerId,
         name,
         qrImagePath,
+        miniProgramCodePath,
         linkedOpenId,
         enabled,
         isDefault ? 1 : 0,
@@ -1018,6 +1047,23 @@ export function saveBroker(input = {}) {
     ensureDefaultBrokerInvariant();
     return getBrokerById(internalId);
   });
+}
+
+export function updateBrokerMiniProgramCodePath(id, miniProgramCodePath = "") {
+  const db = getDb();
+  const timestamp = now();
+  const result = db.prepare(`
+    UPDATE brokers
+    SET mini_program_code_url = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(String(miniProgramCodePath || "").trim(), timestamp, Number(id));
+
+  if (!result.changes) {
+    return null;
+  }
+
+  return getBrokerById(id);
 }
 
 export function deleteBroker(id) {

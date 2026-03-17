@@ -23,6 +23,7 @@ import {
   deletePaper,
   deleteUser,
   getAdminById,
+  getBrokerById,
   getBrokerByBrokerId,
   getBrokerByLinkedOpenId,
   getConfig,
@@ -41,6 +42,7 @@ import {
   replacePapers,
   saveBroker,
   updateAdminCredentials,
+  updateBrokerMiniProgramCodePath,
   updateConfig,
   updatePaper,
   updateUser,
@@ -48,7 +50,12 @@ import {
   upsertUserByOpenId,
 } from "./lib/store.js";
 import { parsePdfToPaper } from "./lib/pdfParser.js";
-import { exchangeCodeForSession, hasWechatLoginConfig } from "./lib/wechat.js";
+import {
+  buildBrokerMiniCodeScene,
+  exchangeCodeForSession,
+  generateUnlimitedWxaCode,
+  hasWechatLoginConfig,
+} from "./lib/wechat.js";
 import {
   ADMIN_SESSION_COOKIE,
   createAdminSessionToken,
@@ -287,6 +294,7 @@ function sanitizeBroker(req, broker) {
   return {
     ...broker,
     qrImageUrl: broker.qrImagePath ? toAbsoluteUrl(req, broker.qrImagePath) : "",
+    miniProgramCodeUrl: broker.miniProgramCodePath ? toAbsoluteUrl(req, broker.miniProgramCodePath) : "",
   };
 }
 
@@ -351,6 +359,31 @@ function sanitizeQuizAttemptForAdmin(req, attempt) {
     passed: Boolean(attempt.summary?.passed),
     broker: sanitizeBroker(req, attempt.broker),
   };
+}
+
+function createUploadFileName(prefix, identifier = "", extension = ".png") {
+  const normalizedIdentifier = String(identifier || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "item";
+  return `${prefix}-${normalizedIdentifier}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}${extension}`;
+}
+
+async function removePublicUploadFile(relativePath = "") {
+  const normalizedPath = String(relativePath || "").trim().split("?")[0];
+  if (!normalizedPath.startsWith("/uploads/")) {
+    return;
+  }
+
+  const absolutePath = path.resolve(publicUploadDir, normalizedPath.replace(/^\/uploads\/+/, ""));
+  const normalizedUploadRoot = `${path.resolve(publicUploadDir)}${path.sep}`;
+  if (!absolutePath.startsWith(normalizedUploadRoot)) {
+    return;
+  }
+
+  await fs.unlink(absolutePath).catch(() => {});
 }
 
 async function importDemoPdfs() {
@@ -791,6 +824,48 @@ adminApi.post("/upload-image", imageUpload.single("file"), (req, res) => {
     },
   });
 });
+
+adminApi.post("/brokers/:id/generate-minicode", asyncHandler(async (req, res) => {
+  const broker = getBrokerById(req.params.id);
+  if (!broker) {
+    res.status(404).json({ message: "中介人不存在" });
+    return;
+  }
+
+  if (!broker.linkedOpenId) {
+    res.status(400).json({ message: "请先为中介人填写并保存绑定 OpenID，再生成小程序碼" });
+    return;
+  }
+
+  if (!hasWechatLoginConfig()) {
+    res.status(400).json({ message: "服务端未配置 WECHAT_APP_ID / WECHAT_APP_SECRET" });
+    return;
+  }
+
+  const scene = buildBrokerMiniCodeScene(broker.brokerId);
+  const imageBuffer = await generateUnlimitedWxaCode({ scene });
+  const codeDirectory = path.join(publicUploadDir, "wxacodes");
+  await fs.mkdir(codeDirectory, { recursive: true });
+
+  const fileName = createUploadFileName("minicode", broker.brokerId, ".png");
+  const absolutePath = path.join(codeDirectory, fileName);
+  const relativePath = `/uploads/wxacodes/${fileName}`;
+  await fs.writeFile(absolutePath, imageBuffer);
+
+  if (broker.miniProgramCodePath && broker.miniProgramCodePath !== relativePath) {
+    await removePublicUploadFile(broker.miniProgramCodePath);
+  }
+
+  const updatedBroker = updateBrokerMiniProgramCodePath(broker.id, relativePath);
+  res.json({
+    message: "小程序碼已生成",
+    broker: sanitizeBroker(req, updatedBroker || { ...broker, miniProgramCodePath: relativePath }),
+    file: {
+      path: relativePath,
+      url: toAbsoluteUrl(req, relativePath),
+    },
+  });
+}));
 
 adminApi.post("/brokers", (req, res) => {
   const broker = saveBroker(req.body || {});

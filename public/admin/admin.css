@@ -153,6 +153,13 @@ body {
   border: 1px solid #ffccc7;
 }
 
+.link-button-shell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .ghost-button--block {
   width: 100%;
 }

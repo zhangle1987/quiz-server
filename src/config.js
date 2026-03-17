@@ -25,6 +25,11 @@ export const tempUploadDir = path.join(serverRoot, "tmp", "uploads");
 export const defaultPort = 3000;
 export const wechatAppId = process.env.WECHAT_APP_ID || "";
 export const wechatAppSecret = process.env.WECHAT_APP_SECRET || "";
+export const wechatMiniCodePage = String(process.env.WECHAT_MINICODE_PAGE || "pages/index/index").trim() || "pages/index/index";
+export const wechatMiniCodeEnvVersion = (() => {
+  const value = String(process.env.WECHAT_MINICODE_ENV_VERSION || "release").trim().toLowerCase();
+  return ["release", "trial", "develop"].includes(value) ? value : "release";
+})();
 export const adminSessionSecret = String(process.env.ADMIN_SESSION_SECRET || "").trim();
 export const adminInitialUsername = String(process.env.ADMIN_INITIAL_USERNAME || "").trim();
 export const adminInitialPassword = String(process.env.ADMIN_INITIAL_PASSWORD || "");
