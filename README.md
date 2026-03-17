@@ -35,9 +35,9 @@ PUBLIC_ORIGIN=https://你的域名
 
 ## 当前能力
 
-- SQLite 存储题库、经纪人、用户登录信息
+- SQLite 存储题库、中介人、用户登录信息
 - `POST /api/auth/login` 和 `POST /api/auth/bootstrap` 支持小程序 `wx.login` 登录
 - 访问 `http://127.0.0.1:3000/admin/login` 可进入服务端管理台
 - 首次启动会从 `.env` 初始化管理员；如果检测到旧的 `admin / admin`，会按 `.env` 自动迁移
-- 服务端管理台支持管理员登录、题库管理、经纪人管理、管理员账号密码修改
+- 服务端管理台支持管理员登录、题库管理、中介人管理、管理员账号密码修改
 - 管理台接口位于 `/admin/api/*`，登录后才能使用

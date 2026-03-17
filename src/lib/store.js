@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
   adminInitialPassword,
@@ -25,11 +26,16 @@ const DEFAULT_PAPER_QUIZ_CONFIG = {
 
 const DEFAULT_BROKER = {
   brokerId: "default-broker",
-  name: "默认经纪人",
+  name: "默认中介人",
   qrImagePath: "",
   linkedOpenId: "",
   enabled: true,
   isDefault: true,
+};
+
+const FRIEND_STATUS = {
+  PENDING: "pending",
+  ADDED: "added",
 };
 
 let database;
@@ -54,6 +60,12 @@ function parseJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function normalizeFriendStatus(value) {
+  return String(value || "").trim().toLowerCase() === FRIEND_STATUS.ADDED
+    ? FRIEND_STATUS.ADDED
+    : FRIEND_STATUS.PENDING;
 }
 
 function normalizeOption(option, index) {
@@ -137,6 +149,12 @@ function normalizePaper(paper) {
     paper.quizConfig || paper.examConfig || paper,
     normalizedQuestions.length,
   );
+  const rawSortOrder = Number(
+    paper.sortOrder
+      ?? paper.sort_order
+      ?? paper.displayOrder
+      ?? 0,
+  );
 
   return {
     id: String(paper.id || "").trim(),
@@ -144,6 +162,7 @@ function normalizePaper(paper) {
     sourceFile: String(paper.sourceFile || "").trim(),
     importedAt: String(paper.importedAt || now()),
     updatedAt: String(paper.updatedAt || now()),
+    sortOrder: Number.isFinite(rawSortOrder) ? Math.round(rawSortOrder) : 0,
     questionCount: normalizedQuestions.length,
     quizConfig,
     questions: normalizedQuestions,
@@ -157,6 +176,7 @@ function serializePaperRow(row, includeQuestions = false) {
     sourceFile: row.source_file,
     importedAt: row.imported_at,
     updatedAt: row.updated_at,
+    sortOrder: Number(row.sort_order || 0),
     questionCount: row.question_count,
     quizConfig: normalizeQuizConfig(
       parseJson(row.quiz_config_json, DEFAULT_PAPER_QUIZ_CONFIG),
@@ -186,11 +206,38 @@ function serializeBrokerRow(row) {
 }
 
 function serializeUserRow(row) {
+  const nickname = String(row.nickname || "").trim();
+  const friendStatus = normalizeFriendStatus(row.friend_status);
   return {
     id: row.id,
     openid: row.openid,
+    nickname,
+    friendStatus,
+    displayName: nickname || row.openid,
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at,
+    updatedAt: row.updated_at || row.last_login_at || row.created_at,
+    attemptCount: Number(row.attempt_count || 0),
+    latestAttemptId: row.latest_attempt_id || "",
+    latestAttemptAt: row.latest_attempt_at || "",
+    latestPaperTitle: row.latest_paper_title || "",
+  };
+}
+
+function serializeQuizAttemptRow(row) {
+  return {
+    id: row.id,
+    openid: row.openid,
+    nickname: String(row.nickname || "").trim(),
+    paperId: row.paper_id,
+    paperTitle: row.paper_title,
+    brokerId: row.broker_id || "",
+    paper: parseJson(row.paper_snapshot_json, null),
+    broker: parseJson(row.broker_snapshot_json, null),
+    summary: parseJson(row.summary_json, null),
+    results: parseJson(row.results_json, []),
+    submitMode: row.submit_mode || "manual",
+    createdAt: row.created_at,
   };
 }
 
@@ -244,6 +291,7 @@ function getDb() {
         title TEXT NOT NULL,
         source_file TEXT NOT NULL DEFAULT '',
         imported_at TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
         question_count INTEGER NOT NULL DEFAULT 0,
         quiz_config_json TEXT NOT NULL DEFAULT '{"durationMinutes":60,"questionCount":20,"passThreshold":70}',
         questions_json TEXT NOT NULL,
@@ -253,8 +301,11 @@ function getDb() {
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         openid TEXT NOT NULL UNIQUE,
+        nickname TEXT NOT NULL DEFAULT '',
+        friend_status TEXT NOT NULL DEFAULT 'pending',
         created_at TEXT NOT NULL,
-        last_login_at TEXT NOT NULL
+        last_login_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT ''
       );
 
       CREATE TABLE IF NOT EXISTS brokers (
@@ -277,12 +328,31 @@ function getDb() {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS quiz_attempts (
+        id TEXT PRIMARY KEY,
+        openid TEXT NOT NULL,
+        nickname TEXT NOT NULL DEFAULT '',
+        paper_id TEXT NOT NULL,
+        paper_title TEXT NOT NULL DEFAULT '',
+        broker_id TEXT NOT NULL DEFAULT '',
+        broker_snapshot_json TEXT NOT NULL DEFAULT '{}',
+        paper_snapshot_json TEXT NOT NULL DEFAULT '{}',
+        summary_json TEXT NOT NULL DEFAULT '{}',
+        results_json TEXT NOT NULL DEFAULT '[]',
+        submit_mode TEXT NOT NULL DEFAULT 'manual',
+        created_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_brokers_linked_openid
       ON brokers (linked_openid);
+
+      CREATE INDEX IF NOT EXISTS idx_quiz_attempts_openid_created_at
+      ON quiz_attempts (openid, created_at DESC);
     `);
 
     seedConfig();
     ensurePaperSchema();
+    ensureUserSchema();
     migrateLegacyData();
     ensureAdminBootstrap();
     ensureDefaultBrokerInvariant();
@@ -295,6 +365,7 @@ function ensurePaperSchema() {
   const db = getDb();
   const columns = db.prepare("PRAGMA table_info(papers)").all();
   const hasQuizConfigColumn = columns.some((column) => column.name === "quiz_config_json");
+  const hasSortOrderColumn = columns.some((column) => column.name === "sort_order");
   if (!hasQuizConfigColumn) {
     const defaultValue = JSON.stringify(DEFAULT_PAPER_QUIZ_CONFIG).replace(/'/g, "''");
     db.exec(`
@@ -302,6 +373,36 @@ function ensurePaperSchema() {
       ADD COLUMN quiz_config_json TEXT NOT NULL DEFAULT '${defaultValue}'
     `);
   }
+  if (!hasSortOrderColumn) {
+    db.exec(`
+      ALTER TABLE papers
+      ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0
+    `);
+  }
+}
+
+function ensureUserSchema() {
+  const db = getDb();
+  const columns = db.prepare("PRAGMA table_info(users)").all();
+  const columnNames = new Set(columns.map((column) => column.name));
+
+  if (!columnNames.has("nickname")) {
+    db.exec("ALTER TABLE users ADD COLUMN nickname TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columnNames.has("friend_status")) {
+    db.exec(`ALTER TABLE users ADD COLUMN friend_status TEXT NOT NULL DEFAULT '${FRIEND_STATUS.PENDING}'`);
+  }
+  if (!columnNames.has("updated_at")) {
+    db.exec("ALTER TABLE users ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
+  }
+
+  db.prepare(`
+    UPDATE users
+    SET updated_at = CASE
+      WHEN updated_at IS NULL OR updated_at = '' THEN COALESCE(last_login_at, created_at, '')
+      ELSE updated_at
+    END
+  `).run();
 }
 
 function runInTransaction(callback) {
@@ -544,7 +645,7 @@ export function listPapers() {
   return db.prepare(`
     SELECT *
     FROM papers
-    ORDER BY updated_at DESC, imported_at DESC, id ASC
+    ORDER BY sort_order DESC, updated_at DESC, imported_at DESC, id ASC
   `).all().map((row) => serializePaperRow(row));
 }
 
@@ -575,15 +676,17 @@ export function upsertPaper(paperInput) {
       title,
       source_file,
       imported_at,
+      sort_order,
       question_count,
       quiz_config_json,
       questions_json,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       title = excluded.title,
       source_file = excluded.source_file,
       imported_at = excluded.imported_at,
+      sort_order = excluded.sort_order,
       question_count = excluded.question_count,
       quiz_config_json = excluded.quiz_config_json,
       questions_json = excluded.questions_json,
@@ -593,6 +696,7 @@ export function upsertPaper(paperInput) {
     normalizedPaper.title,
     normalizedPaper.sourceFile,
     importedAt,
+    normalizedPaper.sortOrder,
     normalizedPaper.questions.length,
     JSON.stringify(normalizedPaper.quizConfig),
     JSON.stringify(normalizedPaper.questions),
@@ -630,16 +734,18 @@ export function replacePapers(papers = []) {
           title,
           source_file,
           imported_at,
+          sort_order,
           question_count,
           quiz_config_json,
           questions_json,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         normalizedPaper.id,
         normalizedPaper.title,
         normalizedPaper.sourceFile,
         normalizedPaper.importedAt,
+        normalizedPaper.sortOrder,
         normalizedPaper.questions.length,
         JSON.stringify(normalizedPaper.quizConfig),
         JSON.stringify(normalizedPaper.questions),
@@ -681,6 +787,97 @@ export function listBrokers() {
     FROM brokers
     ORDER BY is_default DESC, enabled DESC, updated_at DESC, id DESC
   `).all().map((row) => serializeBrokerRow(row));
+}
+
+export function listUsers() {
+  const db = getDb();
+  return db.prepare(`
+    SELECT
+      users.*,
+      (SELECT COUNT(*) FROM quiz_attempts WHERE quiz_attempts.openid = users.openid) AS attempt_count,
+      (SELECT id FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_attempt_id,
+      (SELECT created_at FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_attempt_at,
+      (SELECT paper_title FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_paper_title
+    FROM users
+    ORDER BY last_login_at DESC, created_at DESC, id DESC
+  `).all().map((row) => serializeUserRow(row));
+}
+
+export function countUsers() {
+  const db = getDb();
+  const row = db.prepare("SELECT COUNT(*) AS count FROM users").get();
+  return Number(row?.count || 0);
+}
+
+export function listUsersPage(options = {}) {
+  const db = getDb();
+  const rawPage = Number(options.page);
+  const rawPageSize = Number(options.pageSize);
+  const page = Number.isFinite(rawPage) && rawPage > 0 ? Math.round(rawPage) : 1;
+  const pageSize = Number.isFinite(rawPageSize) && rawPageSize > 0
+    ? Math.min(100, Math.round(rawPageSize))
+    : 12;
+  const total = countUsers();
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const offset = (safePage - 1) * pageSize;
+  const items = db.prepare(`
+    SELECT
+      users.*,
+      (SELECT COUNT(*) FROM quiz_attempts WHERE quiz_attempts.openid = users.openid) AS attempt_count,
+      (SELECT id FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_attempt_id,
+      (SELECT created_at FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_attempt_at,
+      (SELECT paper_title FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_paper_title
+    FROM users
+    ORDER BY last_login_at DESC, created_at DESC, id DESC
+    LIMIT ? OFFSET ?
+  `).all(pageSize, offset).map((row) => serializeUserRow(row));
+
+  return {
+    items,
+    page: safePage,
+    pageSize,
+    total,
+    totalPages,
+  };
+}
+
+export function getUserById(id) {
+  if (!id) {
+    return null;
+  }
+
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT
+      users.*,
+      (SELECT COUNT(*) FROM quiz_attempts WHERE quiz_attempts.openid = users.openid) AS attempt_count,
+      (SELECT id FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_attempt_id,
+      (SELECT created_at FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_attempt_at,
+      (SELECT paper_title FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_paper_title
+    FROM users
+    WHERE id = ?
+  `).get(Number(id));
+  return row ? serializeUserRow(row) : null;
+}
+
+export function getUserByOpenId(openid) {
+  if (!openid) {
+    return null;
+  }
+
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT
+      users.*,
+      (SELECT COUNT(*) FROM quiz_attempts WHERE quiz_attempts.openid = users.openid) AS attempt_count,
+      (SELECT id FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_attempt_id,
+      (SELECT created_at FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_attempt_at,
+      (SELECT paper_title FROM quiz_attempts WHERE quiz_attempts.openid = users.openid ORDER BY created_at DESC LIMIT 1) AS latest_paper_title
+    FROM users
+    WHERE openid = ?
+  `).get(String(openid).trim());
+  return row ? serializeUserRow(row) : null;
 }
 
 export function getBrokerById(id) {
@@ -757,7 +954,7 @@ export function saveBroker(input = {}) {
   const isDefault = Boolean(input.isDefault);
 
   if (!brokerId) {
-    throw new Error("经纪人 ID 不能为空");
+    throw new Error("中介人 ID 不能为空");
   }
 
   return runInTransaction((db) => {
@@ -770,7 +967,7 @@ export function saveBroker(input = {}) {
     if (internalId) {
       const existing = db.prepare("SELECT * FROM brokers WHERE id = ?").get(internalId);
       if (!existing) {
-        throw new Error("经纪人不存在");
+        throw new Error("中介人不存在");
       }
 
       db.prepare(`
@@ -827,7 +1024,7 @@ export function deleteBroker(id) {
   return runInTransaction((db) => {
     const total = db.prepare("SELECT COUNT(*) AS count FROM brokers").get().count;
     if (total <= 1) {
-      throw new Error("至少保留一个经纪人");
+      throw new Error("至少保留一个中介人");
     }
 
     const result = db.prepare("DELETE FROM brokers WHERE id = ?").run(Number(id));
@@ -840,7 +1037,7 @@ export function deleteBroker(id) {
   });
 }
 
-export function upsertUserByOpenId(openid) {
+export function upsertUserByOpenId(openid, updates = {}) {
   const normalizedOpenId = String(openid || "").trim();
   if (!normalizedOpenId) {
     return null;
@@ -849,23 +1046,169 @@ export function upsertUserByOpenId(openid) {
   const db = getDb();
   const existing = db.prepare("SELECT * FROM users WHERE openid = ?").get(normalizedOpenId);
   const timestamp = now();
+  const requestedNickname = String(updates.nickname || "").trim();
+  const hasNicknameUpdate = Boolean(requestedNickname);
+  const nextNickname = hasNicknameUpdate ? requestedNickname : String(existing?.nickname || "").trim();
+  const nextFriendStatus = Object.prototype.hasOwnProperty.call(updates, "friendStatus")
+    ? normalizeFriendStatus(updates.friendStatus)
+    : normalizeFriendStatus(existing?.friend_status);
 
   if (existing) {
     db.prepare(`
       UPDATE users
-      SET last_login_at = ?
+      SET nickname = ?,
+          friend_status = ?,
+          last_login_at = ?,
+          updated_at = ?
       WHERE openid = ?
-    `).run(timestamp, normalizedOpenId);
+    `).run(nextNickname, nextFriendStatus, timestamp, timestamp, normalizedOpenId);
   } else {
     db.prepare(`
-      INSERT INTO users (openid, created_at, last_login_at)
-      VALUES (?, ?, ?)
-    `).run(normalizedOpenId, timestamp, timestamp);
+      INSERT INTO users (openid, nickname, friend_status, created_at, last_login_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(normalizedOpenId, nextNickname, nextFriendStatus, timestamp, timestamp, timestamp);
   }
 
-  return serializeUserRow(
-    db.prepare("SELECT * FROM users WHERE openid = ?").get(normalizedOpenId),
-  );
+  return getUserByOpenId(normalizedOpenId);
+}
+
+export function updateUser(id, updates = {}) {
+  const db = getDb();
+  const existing = db.prepare("SELECT * FROM users WHERE id = ?").get(Number(id));
+  if (!existing) {
+    throw new Error("用户不存在");
+  }
+
+  const requestedNickname = String(updates.nickname || "").trim();
+  const nextNickname = Object.prototype.hasOwnProperty.call(updates, "nickname")
+    ? requestedNickname
+    : String(existing.nickname || "").trim();
+  const nextFriendStatus = Object.prototype.hasOwnProperty.call(updates, "friendStatus")
+    ? normalizeFriendStatus(updates.friendStatus)
+    : normalizeFriendStatus(existing.friend_status);
+  const timestamp = now();
+
+  db.prepare(`
+    UPDATE users
+    SET nickname = ?,
+        friend_status = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(nextNickname, nextFriendStatus, timestamp, Number(id));
+
+  return getUserById(id);
+}
+
+export function deleteUser(id) {
+  return runInTransaction((db) => {
+    const existing = db.prepare("SELECT * FROM users WHERE id = ?").get(Number(id));
+    if (!existing) {
+      return false;
+    }
+
+    db.prepare("DELETE FROM quiz_attempts WHERE openid = ?").run(String(existing.openid || "").trim());
+    const result = db.prepare("DELETE FROM users WHERE id = ?").run(Number(id));
+    return Boolean(result.changes);
+  });
+}
+
+export function createQuizAttempt(input = {}) {
+  const normalizedOpenId = String(input.openid || "").trim();
+  if (!normalizedOpenId) {
+    throw new Error("缺少用户 OpenID");
+  }
+
+  const paper = input.paper && typeof input.paper === "object" ? input.paper : null;
+  const summary = input.summary && typeof input.summary === "object" ? input.summary : {};
+  const results = Array.isArray(input.results) ? input.results : [];
+  const broker = input.broker && typeof input.broker === "object" ? input.broker : null;
+  const nickname = String(input.nickname || "").trim();
+  const submitMode = String(input.submitMode || "manual").trim() || "manual";
+  const createdAt = now();
+  const attemptId = String(input.id || `attempt-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`);
+
+  runInTransaction((db) => {
+    upsertUserByOpenId(normalizedOpenId, { nickname });
+    db.prepare(`
+      INSERT INTO quiz_attempts (
+        id,
+        openid,
+        nickname,
+        paper_id,
+        paper_title,
+        broker_id,
+        broker_snapshot_json,
+        paper_snapshot_json,
+        summary_json,
+        results_json,
+        submit_mode,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      attemptId,
+      normalizedOpenId,
+      nickname,
+      String(paper?.id || "").trim(),
+      String(paper?.title || "").trim(),
+      String(broker?.brokerId || "").trim(),
+      JSON.stringify(broker || null),
+      JSON.stringify(paper || null),
+      JSON.stringify(summary),
+      JSON.stringify(results),
+      submitMode,
+      createdAt,
+    );
+  });
+
+  return getQuizAttemptByIdForOpenId(attemptId, normalizedOpenId);
+}
+
+export function getQuizAttemptByIdForOpenId(attemptId, openid) {
+  if (!attemptId || !openid) {
+    return null;
+  }
+
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT *
+    FROM quiz_attempts
+    WHERE id = ? AND openid = ?
+  `).get(String(attemptId).trim(), String(openid).trim());
+  return row ? serializeQuizAttemptRow(row) : null;
+}
+
+export function getLatestQuizAttemptByOpenId(openid) {
+  if (!openid) {
+    return null;
+  }
+
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT *
+    FROM quiz_attempts
+    WHERE openid = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(String(openid).trim());
+  return row ? serializeQuizAttemptRow(row) : null;
+}
+
+export function listQuizAttemptsByOpenId(openid, limit = 20) {
+  if (!openid) {
+    return [];
+  }
+
+  const db = getDb();
+  const normalizedLimit = Number.isFinite(Number(limit)) && Number(limit) > 0
+    ? Math.min(100, Math.round(Number(limit)))
+    : 20;
+  return db.prepare(`
+    SELECT *
+    FROM quiz_attempts
+    WHERE openid = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(String(openid).trim(), normalizedLimit).map((row) => serializeQuizAttemptRow(row));
 }
 
 export function getAdminById(id) {

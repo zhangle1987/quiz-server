@@ -15,7 +15,8 @@
 
       <nav class="menu">
         <button class="menu__item menu__item--active" data-section="papers" type="button">题库</button>
-        <button class="menu__item" data-section="brokers" type="button">经纪人</button>
+        <button class="menu__item" data-section="brokers" type="button">中介人</button>
+        <button class="menu__item" data-section="users" type="button">用户</button>
         <button class="menu__item" data-section="admin" type="button">管理员</button>
       </nav>
 
@@ -37,8 +38,12 @@
             <div id="paper-count" class="summary-card__value">0</div>
           </div>
           <div class="summary-card">
-            <div class="summary-card__label">经纪人数</div>
+            <div class="summary-card__label">中介人数</div>
             <div id="broker-count" class="summary-card__value">0</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-card__label">用户数</div>
+            <div id="user-count" class="summary-card__value">0</div>
           </div>
         </div>
       </header>
@@ -73,6 +78,10 @@
               <div class="paper-config-panel__title">考试配置</div>
               <div class="paper-config-grid">
                 <label class="form-field">
+                  <span>排序值</span>
+                  <input id="paper-sort-order" type="number" step="1" />
+                </label>
+                <label class="form-field">
                   <span>答题时长（分钟）</span>
                   <input id="paper-duration-minutes" type="number" min="1" step="1" />
                 </label>
@@ -94,11 +103,11 @@
       <section id="section-brokers" class="section">
         <div class="section-head">
           <div>
-            <h2 class="section-title">经纪人管理</h2>
+            <h2 class="section-title">中介人管理</h2>
             <p class="section-desc">维护分享归因 ID、绑定 OpenID，以及结果页展示的微信二维码。</p>
           </div>
           <div class="button-row">
-            <button id="broker-new" class="ghost-button" type="button">新增经纪人</button>
+            <button id="broker-new" class="ghost-button" type="button">新增中介人</button>
           </div>
         </div>
 
@@ -106,11 +115,11 @@
           <div id="broker-list" class="list-panel"></div>
           <form id="broker-form" class="editor-panel form-panel">
             <div class="form-field">
-              <span>经纪人 ID</span>
+              <span>中介人 ID</span>
               <input id="broker-id" name="brokerId" type="text" required />
             </div>
             <div class="form-field">
-              <span>经纪人名称</span>
+              <span>中介人名称</span>
               <input id="broker-name" name="name" type="text" />
             </div>
             <div class="form-field">
@@ -124,7 +133,7 @@
               </label>
               <label class="checkbox-field">
                 <input id="broker-default" type="checkbox" />
-                <span>设为默认经纪人</span>
+                <span>设为默认中介人</span>
               </label>
             </div>
             <div class="form-field">
@@ -134,10 +143,48 @@
             </div>
             <div id="broker-preview" class="image-preview image-preview--empty">暂未上传二维码</div>
             <div class="button-row">
-              <button class="primary-button" type="submit">保存经纪人</button>
-              <button id="broker-delete" class="danger-button" type="button">删除经纪人</button>
+              <button class="primary-button" type="submit">保存中介人</button>
+              <button id="broker-delete" class="danger-button" type="button">删除中介人</button>
             </div>
           </form>
+        </div>
+      </section>
+
+      <section id="section-users" class="section">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">用户与答题记录</h2>
+            <p class="section-desc">用户较多时按分页查看。列表里可直接修改是否已加好友，点击详情后弹窗查看用户资料和最近答题记录。</p>
+          </div>
+        </div>
+
+        <div class="single-panel">
+          <div class="table-toolbar">
+            <div class="inline-note">昵称仅在用户授权后才会保存。未授权时列表显示 OpenID。</div>
+            <div id="user-pagination-summary" class="inline-note">共 0 位用户</div>
+          </div>
+
+          <div class="table-shell">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>用户</th>
+                  <th>OpenID</th>
+                  <th>答题次数</th>
+                  <th>最近试卷</th>
+                  <th>好友状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="user-table-body"></tbody>
+            </table>
+          </div>
+
+          <div class="pagination-bar">
+            <button id="user-prev-page" class="ghost-button" type="button">上一页</button>
+            <div id="user-page-current" class="pagination-bar__text">第 1 / 1 页</div>
+            <button id="user-next-page" class="ghost-button" type="button">下一页</button>
+          </div>
         </div>
       </section>
 
@@ -166,6 +213,52 @@
         </div>
       </section>
     </main>
+
+    <div id="user-modal" class="modal">
+      <div class="modal__backdrop" data-action="close-user-modal"></div>
+      <div class="modal__dialog modal__dialog--wide">
+        <div class="modal__head">
+          <div>
+            <div class="modal__eyebrow">用户详情</div>
+            <div id="user-modal-title" class="modal__title">用户资料</div>
+          </div>
+          <button id="user-modal-close" class="ghost-button" type="button">关闭</button>
+        </div>
+
+        <div class="modal__body">
+          <form id="user-form" class="form-panel">
+            <div class="form-grid">
+              <div class="form-field">
+                <span>用户昵称</span>
+                <input id="user-nickname" type="text" readonly />
+              </div>
+              <div class="form-field">
+                <span>OpenID</span>
+                <input id="user-openid" type="text" readonly />
+              </div>
+              <div class="form-field">
+                <span>好友状态</span>
+                <select id="user-friend-status">
+                  <option value="pending">未确认加好友</option>
+                  <option value="added">已加好友</option>
+                </select>
+              </div>
+            </div>
+            <div id="user-meta" class="inline-note">暂无用户信息</div>
+            <div class="button-row">
+              <button class="primary-button" type="submit">保存用户状态</button>
+            </div>
+          </form>
+
+          <div class="attempt-panel">
+            <div class="attempt-panel__head">
+              <div class="attempt-panel__title">最近答题记录</div>
+            </div>
+            <div id="user-attempt-list" class="attempt-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div id="toast" class="toast"></div>
     <script src="/admin/assets/app.js" defer></script>

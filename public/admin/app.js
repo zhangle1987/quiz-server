@@ -3,6 +3,7 @@ function createEmptyPaperTemplate() {
     id: `paper-${Date.now()}`,
     title: "新题库",
     sourceFile: "manual.json",
+    sortOrder: 0,
     quizConfig: {
       durationMinutes: 120,
       questionCount: 75,
@@ -41,9 +42,35 @@ function createEmptyBrokerForm() {
   };
 }
 
+function createEmptyUserForm() {
+  return {
+    id: 0,
+    openid: "",
+    nickname: "",
+    friendStatus: "pending",
+    displayName: "",
+    attemptCount: 0,
+    latestAttemptAt: "",
+    latestPaperTitle: "",
+    latestAttemptId: "",
+    lastLoginAt: "",
+  };
+}
+
+function createEmptyUsersPage() {
+  return {
+    items: [],
+    page: 1,
+    pageSize: 12,
+    total: 0,
+    totalPages: 1,
+  };
+}
+
 function createPaperEditorPayload(paper) {
   const payload = { ...paper };
   delete payload.quizConfig;
+  delete payload.sortOrder;
   return payload;
 }
 
@@ -56,6 +83,11 @@ const state = {
   paperJson: JSON.stringify(createEmptyPaperTemplate(), null, 2),
   selectedBrokerId: 0,
   brokerForm: createEmptyBrokerForm(),
+  selectedUserId: 0,
+  userForm: createEmptyUserForm(),
+  userAttempts: [],
+  usersPage: createEmptyUsersPage(),
+  userModalOpen: false,
 };
 
 const elements = {
@@ -64,14 +96,17 @@ const elements = {
   sections: {
     papers: document.getElementById("section-papers"),
     brokers: document.getElementById("section-brokers"),
+    users: document.getElementById("section-users"),
     admin: document.getElementById("section-admin"),
   },
   adminIdentity: document.getElementById("admin-identity"),
   logoutButton: document.getElementById("logout-button"),
   paperCount: document.getElementById("paper-count"),
   brokerCount: document.getElementById("broker-count"),
+  userCount: document.getElementById("user-count"),
   paperList: document.getElementById("paper-list"),
   paperEditorMode: document.getElementById("paper-editor-mode"),
+  paperSortOrder: document.getElementById("paper-sort-order"),
   paperDurationMinutes: document.getElementById("paper-duration-minutes"),
   paperQuestionCount: document.getElementById("paper-question-count"),
   paperPassThreshold: document.getElementById("paper-pass-threshold"),
@@ -93,6 +128,20 @@ const elements = {
   brokerPreview: document.getElementById("broker-preview"),
   brokerNew: document.getElementById("broker-new"),
   brokerDelete: document.getElementById("broker-delete"),
+  userTableBody: document.getElementById("user-table-body"),
+  userPaginationSummary: document.getElementById("user-pagination-summary"),
+  userPrevPage: document.getElementById("user-prev-page"),
+  userNextPage: document.getElementById("user-next-page"),
+  userPageCurrent: document.getElementById("user-page-current"),
+  userModal: document.getElementById("user-modal"),
+  userModalTitle: document.getElementById("user-modal-title"),
+  userModalClose: document.getElementById("user-modal-close"),
+  userForm: document.getElementById("user-form"),
+  userNickname: document.getElementById("user-nickname"),
+  userOpenid: document.getElementById("user-openid"),
+  userFriendStatus: document.getElementById("user-friend-status"),
+  userMeta: document.getElementById("user-meta"),
+  userAttemptList: document.getElementById("user-attempt-list"),
   adminForm: document.getElementById("admin-form"),
   adminUsername: document.getElementById("admin-username"),
   adminPassword: document.getElementById("admin-password"),
@@ -146,7 +195,8 @@ function setActiveSection(section) {
   state.activeSection = section;
   const labels = {
     papers: "题库管理",
-    brokers: "经纪人管理",
+    brokers: "中介人管理",
+    users: "用户与答题记录",
     admin: "管理员设置",
   };
   elements.sectionTitle.textContent = labels[section] || "后台管理";
@@ -177,10 +227,34 @@ function syncBrokerForm() {
   }
 }
 
+function syncUserForm() {
+  elements.userNickname.value = state.userForm.nickname || "";
+  elements.userOpenid.value = state.userForm.openid || "";
+  elements.userFriendStatus.value = state.userForm.friendStatus || "pending";
+  elements.userModalTitle.textContent = state.userForm.displayName || state.userForm.openid || "用户资料";
+
+  const metaParts = [];
+  if (state.userForm.lastLoginAt) {
+    metaParts.push(`最近登录：${state.userForm.lastLoginAt}`);
+  }
+  if (state.userForm.attemptCount) {
+    metaParts.push(`答题次数：${state.userForm.attemptCount}`);
+  }
+  if (state.userForm.latestPaperTitle) {
+    metaParts.push(`最近试卷：${state.userForm.latestPaperTitle}`);
+  }
+  if (state.userForm.latestAttemptAt) {
+    metaParts.push(`最近交卷：${state.userForm.latestAttemptAt}`);
+  }
+
+  elements.userMeta.textContent = metaParts.join(" · ") || "暂无用户信息";
+}
+
 function setPaperEditor(paper, mode = "edit") {
   state.paperMode = mode;
   state.selectedPaperId = mode === "edit" ? paper.id : "";
   state.paperJson = JSON.stringify(createPaperEditorPayload(paper), null, 2);
+  elements.paperSortOrder.value = String(paper.sortOrder ?? 0);
   elements.paperDurationMinutes.value = String(paper.quizConfig?.durationMinutes || "");
   elements.paperQuestionCount.value = String(paper.quizConfig?.questionCount || paper.questionCount || "");
   elements.paperPassThreshold.value = String(paper.quizConfig?.passThreshold || "");
@@ -193,6 +267,7 @@ function renderPaperList() {
   elements.paperList.innerHTML = papers.map((paper) => `
     <article class="list-card ${state.selectedPaperId === paper.id ? "list-card--active" : ""}" data-action="select-paper" data-id="${paper.id}">
       <div class="list-card__title">${paper.title}</div>
+      <div class="list-card__meta">排序值：${paper.sortOrder ?? 0}</div>
       <div class="list-card__meta">题库共 ${paper.questionCount} 题，考试抽取 ${paper.quizConfig?.questionCount || paper.questionCount} 题</div>
       <div class="list-card__meta">限时 ${paper.quizConfig?.durationMinutes || 0} 分钟，合格线 ${paper.quizConfig?.passThreshold || 70}%</div>
       <div class="list-card__meta">来源：${paper.sourceFile || "手动编辑"}</div>
@@ -212,16 +287,83 @@ function renderBrokerList() {
         <span class="tag ${broker.enabled ? "tag--success" : "tag--danger"}">${broker.enabled ? "启用" : "停用"}</span>
       </div>
     </article>
-  `).join("") || '<article class="list-card"><div class="list-card__title">暂无经纪人</div></article>';
+  `).join("") || '<article class="list-card"><div class="list-card__title">暂无中介人</div></article>';
+}
+
+function renderUserAttempts() {
+  const attempts = state.userAttempts || [];
+  elements.userAttemptList.innerHTML = attempts.map((attempt) => `
+    <article class="attempt-card">
+      <div class="attempt-card__head">
+        <div class="attempt-card__title">${attempt.paperTitle || "未命名试卷"}</div>
+        <span class="tag ${attempt.passed ? "tag--success" : "tag--danger"}">${attempt.passed ? "合格" : "未合格"}</span>
+      </div>
+      <div class="attempt-card__meta">提交时间：${attempt.createdAt}</div>
+      <div class="attempt-card__meta">分数：${attempt.score}% · 题数：${attempt.total} · 方式：${attempt.submitMode === "timeout" ? "超时自动交卷" : "手动交卷"}</div>
+      <div class="attempt-card__meta">中介人：${attempt.broker?.name || attempt.broker?.brokerId || "未关联"}</div>
+    </article>
+  `).join("") || '<div class="attempt-empty">暂无答题记录</div>';
+}
+
+function renderUserTable() {
+  const { items, page, totalPages, total, pageSize } = state.usersPage;
+
+  elements.userTableBody.innerHTML = items.map((user) => `
+    <tr data-user-id="${user.id}">
+      <td>
+        <div class="data-table__user">
+          <div class="data-table__name">${user.displayName || user.openid}</div>
+          <div class="data-table__sub">${user.nickname ? "已授权昵称" : "未授权昵称"}</div>
+        </div>
+      </td>
+      <td><div class="data-table__sub">${user.openid}</div></td>
+      <td>${user.attemptCount || 0}</td>
+      <td><div class="data-table__sub">${user.latestPaperTitle || "暂无"}</div></td>
+      <td>
+        <select class="table-select" data-action="change-user-status" data-id="${user.id}">
+          <option value="pending" ${user.friendStatus === "pending" ? "selected" : ""}>未确认</option>
+          <option value="added" ${user.friendStatus === "added" ? "selected" : ""}>已加好友</option>
+        </select>
+      </td>
+      <td>
+        <div class="table-actions">
+          <button class="link-button" type="button" data-action="open-user" data-id="${user.id}">查看详情</button>
+          <button class="link-button link-button--danger" type="button" data-action="delete-user" data-id="${user.id}">删除</button>
+        </div>
+      </td>
+    </tr>
+  `).join("") || '<tr><td class="data-table__empty" colspan="6">暂无用户</td></tr>';
+
+  elements.userPaginationSummary.textContent = `共 ${total} 位用户，每页 ${pageSize} 位`;
+  elements.userPageCurrent.textContent = `第 ${page} / ${totalPages} 页`;
+  elements.userPrevPage.disabled = page <= 1;
+  elements.userNextPage.disabled = page >= totalPages;
 }
 
 function renderOverview() {
-  const overview = state.overview || { papers: [], brokers: [] };
+  const overview = state.overview || { papers: [], brokers: [], userCount: 0 };
   elements.paperCount.textContent = overview.papers.length;
   elements.brokerCount.textContent = overview.brokers.length;
+  elements.userCount.textContent = overview.userCount || 0;
   renderPaperList();
   renderBrokerList();
+  renderUserTable();
   syncBrokerForm();
+  if (state.userModalOpen) {
+    syncUserForm();
+    renderUserAttempts();
+  }
+}
+
+function patchUserInState(user) {
+  if (!user?.id) {
+    return;
+  }
+
+  state.usersPage.items = state.usersPage.items.map((item) => (item.id === user.id ? { ...item, ...user } : item));
+  if (state.selectedUserId === user.id) {
+    state.userForm = { ...state.userForm, ...user };
+  }
 }
 
 async function loadOverview() {
@@ -243,6 +385,15 @@ async function loadOverview() {
   renderOverview();
 }
 
+async function loadUsersPage(page = state.usersPage.page) {
+  const payload = await requestJson(`/admin/api/users?page=${encodeURIComponent(page)}&pageSize=${encodeURIComponent(state.usersPage.pageSize)}`);
+  state.usersPage = {
+    items: payload.users || [],
+    ...(payload.pagination || createEmptyUsersPage()),
+  };
+  renderUserTable();
+}
+
 async function loadPaperDetail(paperId) {
   const payload = await requestJson(`/admin/api/papers/${encodeURIComponent(paperId)}`);
   setPaperEditor(payload.paper, "edit");
@@ -261,13 +412,47 @@ function selectBrokerById(brokerId) {
   syncBrokerForm();
 }
 
+async function loadUserDetail(userId) {
+  if (!userId) {
+    state.userForm = createEmptyUserForm();
+    state.userAttempts = [];
+    return;
+  }
+
+  const payload = await requestJson(`/admin/api/users/${encodeURIComponent(userId)}/attempts`);
+  state.selectedUserId = Number(userId);
+  state.userForm = { ...payload.user };
+  state.userAttempts = payload.attempts || [];
+  patchUserInState(payload.user);
+}
+
+function openUserModal() {
+  state.userModalOpen = true;
+  elements.userModal.classList.add("modal--open");
+  syncUserForm();
+  renderUserAttempts();
+}
+
+function closeUserModal() {
+  state.userModalOpen = false;
+  elements.userModal.classList.remove("modal--open");
+}
+
+async function openUserDetail(userId) {
+  await loadUserDetail(userId);
+  openUserModal();
+  renderUserTable();
+}
+
 function parsePaperJson() {
   try {
     const paper = JSON.parse(elements.paperJson.value);
+    const sortOrder = Number(elements.paperSortOrder.value);
     const durationMinutes = Number(elements.paperDurationMinutes.value);
     const questionCount = Number(elements.paperQuestionCount.value);
     const passThreshold = Number(elements.paperPassThreshold.value);
 
+    paper.sortOrder = Number.isFinite(sortOrder) ? Math.round(sortOrder) : 0;
     paper.quizConfig = {
       durationMinutes: Number.isFinite(durationMinutes) && durationMinutes > 0 ? Math.round(durationMinutes) : 60,
       questionCount: Number.isFinite(questionCount) && questionCount > 0 ? Math.round(questionCount) : 1,
@@ -358,7 +543,7 @@ async function saveBroker(event) {
   };
 
   if (!payload.brokerId) {
-    showToast("请填写经纪人 ID");
+    showToast("请填写中介人 ID");
     return;
   }
 
@@ -375,12 +560,12 @@ async function saveBroker(event) {
   state.selectedBrokerId = response.broker.id;
   state.brokerForm = { ...response.broker };
   await loadOverview();
-  showToast("经纪人已保存");
+  showToast("中介人已保存");
 }
 
 async function deleteCurrentBroker() {
   if (!state.selectedBrokerId) {
-    showToast("请先选择要删除的经纪人");
+    showToast("请先选择要删除的中介人");
     return;
   }
 
@@ -390,7 +575,7 @@ async function deleteCurrentBroker() {
   state.selectedBrokerId = 0;
   state.brokerForm = createEmptyBrokerForm();
   await loadOverview();
-  showToast("经纪人已删除");
+  showToast("中介人已删除");
 }
 
 async function uploadBrokerImage(file) {
@@ -405,6 +590,72 @@ async function uploadBrokerImage(file) {
   state.brokerForm.qrImageUrl = response.file.url;
   syncBrokerForm();
   showToast("二维码上传成功");
+}
+
+async function updateUserFriendStatus(userId, friendStatus, options = {}) {
+  const { silent = false, refreshDetail = false } = options;
+  if (!userId) {
+    return;
+  }
+
+  const response = await requestJson(`/admin/api/users/${encodeURIComponent(userId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ friendStatus }),
+  });
+
+  patchUserInState(response.user);
+  renderUserTable();
+
+  if (refreshDetail && state.selectedUserId === response.user.id) {
+    await loadUserDetail(response.user.id);
+    syncUserForm();
+    renderUserAttempts();
+  } else if (state.selectedUserId === response.user.id) {
+    syncUserForm();
+  }
+
+  if (!silent) {
+    showToast("用户状态已更新");
+  }
+}
+
+async function saveUser(event) {
+  event.preventDefault();
+
+  if (!state.selectedUserId) {
+    showToast("请先选择用户");
+    return;
+  }
+
+  await updateUserFriendStatus(state.selectedUserId, elements.userFriendStatus.value, {
+    refreshDetail: true,
+  });
+}
+
+async function deleteCurrentUser(userId) {
+  if (!userId) {
+    showToast("请先选择用户");
+    return;
+  }
+
+  const confirmed = window.confirm("删除该用户后，其答题记录也会一并删除。确定继续吗？");
+  if (!confirmed) {
+    return;
+  }
+
+  await requestJson(`/admin/api/users/${encodeURIComponent(userId)}`, {
+    method: "DELETE",
+  });
+
+  if (state.selectedUserId === Number(userId)) {
+    state.selectedUserId = 0;
+    state.userForm = createEmptyUserForm();
+    state.userAttempts = [];
+    closeUserModal();
+  }
+
+  await Promise.all([loadOverview(), loadUsersPage(state.usersPage.page)]);
+  showToast("用户已删除");
 }
 
 async function saveAdmin(event) {
@@ -520,11 +771,71 @@ elements.brokerImage.addEventListener("change", (event) => {
   event.target.value = "";
 });
 
+elements.userTableBody.addEventListener("change", (event) => {
+  const target = event.target.closest("[data-action='change-user-status']");
+  if (!target) {
+    return;
+  }
+
+  updateUserFriendStatus(Number(target.dataset.id), target.value, {
+    silent: false,
+    refreshDetail: state.selectedUserId === Number(target.dataset.id),
+  }).catch((error) => showToast(error.message));
+});
+
+elements.userTableBody.addEventListener("click", (event) => {
+  const actionTarget = event.target.closest("[data-action='open-user']");
+  const deleteTarget = event.target.closest("[data-action='delete-user']");
+  if (deleteTarget) {
+    deleteCurrentUser(Number(deleteTarget.dataset.id)).catch((error) => showToast(error.message));
+    return;
+  }
+  const rowTarget = event.target.closest("tr[data-user-id]");
+  const userId = Number(actionTarget?.dataset.id || rowTarget?.dataset.userId || 0);
+  const interactiveTarget = event.target.closest("select, button");
+
+  if (!userId || (interactiveTarget && !actionTarget)) {
+    return;
+  }
+
+  openUserDetail(userId).catch((error) => showToast(error.message));
+});
+
+elements.userPrevPage.addEventListener("click", () => {
+  if (state.usersPage.page <= 1) {
+    return;
+  }
+
+  loadUsersPage(state.usersPage.page - 1).catch((error) => showToast(error.message));
+});
+
+elements.userNextPage.addEventListener("click", () => {
+  if (state.usersPage.page >= state.usersPage.totalPages) {
+    return;
+  }
+
+  loadUsersPage(state.usersPage.page + 1).catch((error) => showToast(error.message));
+});
+
+elements.userForm.addEventListener("submit", (event) => {
+  saveUser(event).catch((error) => showToast(error.message));
+});
+
+elements.userModalClose.addEventListener("click", () => {
+  closeUserModal();
+});
+
+elements.userModal.addEventListener("click", (event) => {
+  if (event.target.dataset.action === "close-user-modal") {
+    closeUserModal();
+  }
+});
+
 elements.adminForm.addEventListener("submit", (event) => {
   saveAdmin(event).catch((error) => showToast(error.message));
 });
 
-Promise.all([loadSession(), loadOverview()])
+Promise.all([loadSession(), loadOverview(), loadUsersPage(1)])
   .then(() => {
     setActiveSection("papers");
     if (!state.selectedPaperId) {

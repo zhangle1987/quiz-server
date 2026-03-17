@@ -17,23 +17,33 @@ import {
 } from "./config.js";
 import {
   authenticateAdmin,
+  createQuizAttempt,
   createOrReplacePaper,
   deleteBroker,
   deletePaper,
+  deleteUser,
   getAdminById,
   getBrokerByBrokerId,
   getBrokerByLinkedOpenId,
   getConfig,
   getDefaultBroker,
   getPaper,
+  getLatestQuizAttemptByOpenId,
+  getQuizAttemptByIdForOpenId,
+  getUserById,
+  getUserByOpenId,
   initStore,
   listBrokers,
   listPapers,
+  listQuizAttemptsByOpenId,
+  listUsersPage,
+  countUsers,
   replacePapers,
   saveBroker,
   updateAdminCredentials,
   updateConfig,
   updatePaper,
+  updateUser,
   upsertPaper,
   upsertUserByOpenId,
 } from "./lib/store.js";
@@ -280,6 +290,69 @@ function sanitizeBroker(req, broker) {
   };
 }
 
+function sanitizeUser(user) {
+  return user
+    ? {
+      ...user,
+    }
+    : null;
+}
+
+function canUserViewAnswers(user) {
+  return String(user?.friendStatus || "").trim().toLowerCase() === "added";
+}
+
+function sanitizeQuizAttemptForViewer(req, attempt, viewer, options = {}) {
+  if (!attempt) {
+    return null;
+  }
+
+  const { preview = false } = options;
+  const canViewAnswers = canUserViewAnswers(viewer);
+  const paper = attempt.paper
+    ? {
+      id: attempt.paper.id,
+      title: attempt.paper.title,
+      quizConfig: attempt.paper.quizConfig || null,
+    }
+    : {
+      id: attempt.paperId,
+      title: attempt.paperTitle,
+      quizConfig: null,
+    };
+
+  return {
+    id: attempt.id,
+    createdAt: attempt.createdAt,
+    paper,
+    broker: sanitizeBroker(req, attempt.broker),
+    access: {
+      friendStatus: viewer?.friendStatus || "pending",
+      canViewAnswers,
+      requiresFriend: !canViewAnswers,
+    },
+    summary: preview || !canViewAnswers ? null : attempt.summary,
+    results: preview || !canViewAnswers ? [] : attempt.results,
+  };
+}
+
+function sanitizeQuizAttemptForAdmin(req, attempt) {
+  if (!attempt) {
+    return null;
+  }
+
+  return {
+    id: attempt.id,
+    createdAt: attempt.createdAt,
+    submitMode: attempt.submitMode,
+    paperTitle: attempt.paper?.title || attempt.paperTitle || "",
+    score: Number(attempt.summary?.score ?? attempt.summary?.accuracy ?? 0),
+    total: Number(attempt.summary?.total || 0),
+    passed: Boolean(attempt.summary?.passed),
+    broker: sanitizeBroker(req, attempt.broker),
+  };
+}
+
 async function importDemoPdfs() {
   const entries = await fs.readdir(demosDir, { withFileTypes: true });
   const pdfFiles = entries
@@ -354,6 +427,7 @@ app.get("/api/health", (_req, res) => {
     databasePath,
     paperCount: listPapers().length,
     brokerCount: listBrokers().length,
+    userCount: countUsers(),
   });
 });
 
@@ -365,6 +439,7 @@ app.post("/api/auth/login", asyncHandler(async (req, res) => {
 app.post("/api/auth/bootstrap", asyncHandler(async (req, res) => {
   const { incomingBrokerId, storedBrokerId } = req.body || {};
   const loginState = await resolveLogin(req, req.body || {});
+  const user = loginState.user?.openid ? getUserByOpenId(loginState.user.openid) : null;
   const storedBroker = getBrokerByBrokerId(storedBrokerId);
   const incomingBroker = storedBroker ? null : getBrokerByBrokerId(incomingBrokerId);
   const defaultBroker = getDefaultBroker();
@@ -372,9 +447,11 @@ app.post("/api/auth/bootstrap", asyncHandler(async (req, res) => {
   const effectiveBroker = loginState.currentBroker
     || sanitizeBroker(req, sourceBroker)
     || sanitizeBroker(req, defaultBroker);
+  const latestAttempt = user?.openid ? getLatestQuizAttemptByOpenId(user.openid) : null;
 
   res.json({
     ...loginState,
+    user: sanitizeUser(user),
     config: {
       ...getConfig(),
       defaultBrokerId: defaultBroker?.brokerId || "",
@@ -382,6 +459,7 @@ app.post("/api/auth/bootstrap", asyncHandler(async (req, res) => {
     sourceBroker: sanitizeBroker(req, sourceBroker),
     defaultBroker: sanitizeBroker(req, defaultBroker),
     effectiveBroker,
+    latestAttempt: sanitizeQuizAttemptForViewer(req, latestAttempt, user, { preview: true }),
   });
 }));
 
@@ -436,7 +514,7 @@ app.get("/api/question-bank", (req, res) => {
 app.get("/api/brokers/:brokerId", (req, res) => {
   const broker = getBrokerByBrokerId(req.params.brokerId);
   if (!broker) {
-    res.status(404).json({ message: "经纪人不存在" });
+    res.status(404).json({ message: "中介人不存在" });
     return;
   }
 
@@ -445,12 +523,52 @@ app.get("/api/brokers/:brokerId", (req, res) => {
   });
 });
 
+app.post("/api/quiz/attempt-detail", (req, res) => {
+  const attemptId = String(req.body?.attemptId || "").trim();
+  const openid = String(req.body?.openid || "").trim();
+  if (!attemptId || !openid) {
+    res.status(400).json({ message: "缺少答题记录标识" });
+    return;
+  }
+
+  const user = getUserByOpenId(openid);
+  if (!user) {
+    res.status(404).json({ message: "用户不存在" });
+    return;
+  }
+
+  const attempt = getQuizAttemptByIdForOpenId(attemptId, openid);
+  if (!attempt) {
+    res.status(404).json({ message: "答题记录不存在" });
+    return;
+  }
+
+  res.json({
+    user: sanitizeUser(user),
+    attempt: sanitizeQuizAttemptForViewer(req, attempt, user),
+  });
+});
+
 app.post("/api/quiz/grade", (req, res) => {
-  const { paperId, answers = [], questionIds = [], brokerId, submitMode = "manual" } = req.body || {};
+  const {
+    paperId,
+    answers = [],
+    questionIds = [],
+    brokerId,
+    submitMode = "manual",
+    openid,
+    nickname = "",
+  } = req.body || {};
   const paper = getPaper(paperId);
 
   if (!paper) {
     res.status(404).json({ message: "题库不存在" });
+    return;
+  }
+
+  const normalizedOpenId = String(openid || "").trim();
+  if (!normalizedOpenId) {
+    res.status(400).json({ message: "请先完成登录后再提交答卷" });
     return;
   }
 
@@ -495,10 +613,12 @@ app.post("/api/quiz/grade", (req, res) => {
   const accuracy = total ? Math.round((correctCount / total) * 100) : 0;
   const passThreshold = Number(paper.quizConfig?.passThreshold) || 70;
   const broker = getBrokerByBrokerId(brokerId) || getDefaultBroker();
-
-  res.json({
+  const user = upsertUserByOpenId(normalizedOpenId, { nickname });
+  const attempt = createQuizAttempt({
+    openid: normalizedOpenId,
+    nickname,
     paper: sanitizePaper(paper),
-    broker: sanitizeBroker(req, broker),
+    broker,
     summary: {
       total,
       answeredCount,
@@ -512,6 +632,12 @@ app.post("/api/quiz/grade", (req, res) => {
       autoSubmitted: submitMode === "timeout",
     },
     results: resultItems,
+    submitMode,
+  });
+
+  res.json({
+    user: sanitizeUser(user),
+    attempt: sanitizeQuizAttemptForViewer(req, attempt, user),
   });
 });
 
@@ -558,6 +684,7 @@ adminApi.get("/overview", (req, res) => {
     },
     papers: listPapers().map(sanitizePaper),
     brokers: listBrokers().map((broker) => sanitizeBroker(req, broker)),
+    userCount: countUsers(),
     admin: req.admin,
   });
 });
@@ -629,6 +756,7 @@ adminApi.post("/upload-pdf", pdfUpload.single("pdf"), asyncHandler(async (req, r
         {
           ...parsedPaper,
           id: replacePaperId,
+          sortOrder: existingPaper?.sortOrder ?? parsedPaper.sortOrder,
           quizConfig: existingPaper?.quizConfig || parsedPaper.quizConfig,
         },
         { replacePaperId },
@@ -667,7 +795,7 @@ adminApi.post("/upload-image", imageUpload.single("file"), (req, res) => {
 adminApi.post("/brokers", (req, res) => {
   const broker = saveBroker(req.body || {});
   res.json({
-    message: "经纪人已保存",
+    message: "中介人已保存",
     broker: sanitizeBroker(req, broker),
   });
 });
@@ -679,7 +807,7 @@ adminApi.put("/brokers/:id", (req, res) => {
   });
 
   res.json({
-    message: "经纪人已更新",
+    message: "中介人已更新",
     broker: sanitizeBroker(req, broker),
   });
 });
@@ -687,11 +815,57 @@ adminApi.put("/brokers/:id", (req, res) => {
 adminApi.delete("/brokers/:id", (req, res) => {
   const deleted = deleteBroker(req.params.id);
   if (!deleted) {
-    res.status(404).json({ message: "经纪人不存在" });
+    res.status(404).json({ message: "中介人不存在" });
     return;
   }
 
-  res.json({ message: "经纪人已删除" });
+  res.json({ message: "中介人已删除" });
+});
+
+adminApi.get("/users", (req, res) => {
+  const page = Number(req.query.page);
+  const pageSize = Number(req.query.pageSize);
+  const payload = listUsersPage({ page, pageSize });
+  res.json({
+    users: payload.items.map(sanitizeUser),
+    pagination: {
+      page: payload.page,
+      pageSize: payload.pageSize,
+      total: payload.total,
+      totalPages: payload.totalPages,
+    },
+  });
+});
+
+adminApi.get("/users/:id/attempts", (req, res) => {
+  const user = getUserById(req.params.id);
+  if (!user) {
+    res.status(404).json({ message: "用户不存在" });
+    return;
+  }
+
+  res.json({
+    user: sanitizeUser(user),
+    attempts: listQuizAttemptsByOpenId(user.openid, 20).map((attempt) => sanitizeQuizAttemptForAdmin(req, attempt)),
+  });
+});
+
+adminApi.put("/users/:id", (req, res) => {
+  const user = updateUser(req.params.id, req.body || {});
+  res.json({
+    message: "用户信息已更新",
+    user: sanitizeUser(user),
+  });
+});
+
+adminApi.delete("/users/:id", (req, res) => {
+  const deleted = deleteUser(req.params.id);
+  if (!deleted) {
+    res.status(404).json({ message: "用户不存在" });
+    return;
+  }
+
+  res.json({ message: "用户已删除" });
 });
 
 adminApi.get("/settings/admin", (req, res) => {
