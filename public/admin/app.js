@@ -388,6 +388,33 @@ function patchUserInState(user) {
   }
 }
 
+function syncBrokerSelectionFromOverview() {
+  const brokers = state.overview?.brokers || [];
+  const selectedBroker = brokers.find((item) => item.id === state.selectedBrokerId) || brokers[0] || null;
+
+  state.selectedBrokerId = selectedBroker?.id || 0;
+  state.brokerForm = selectedBroker ? { ...selectedBroker } : createEmptyBrokerForm();
+  renderBrokerList();
+  syncBrokerForm();
+}
+
+async function syncPaperSelectionFromOverview() {
+  const papers = state.overview?.papers || [];
+  const selectedPaperId = String(state.selectedPaperId || "").trim();
+  const nextPaperId = papers.some((item) => item.id === selectedPaperId)
+    ? selectedPaperId
+    : (papers[0]?.id || "");
+
+  if (!nextPaperId) {
+    state.selectedPaperId = "";
+    setPaperEditor(createEmptyPaperTemplate(), "create");
+    renderPaperList();
+    return;
+  }
+
+  await loadPaperDetail(nextPaperId);
+}
+
 async function loadOverview() {
   state.overview = await requestJson("/admin/api/overview");
   if (!state.currentAdmin) {
@@ -405,6 +432,37 @@ async function loadOverview() {
   }
 
   renderOverview();
+}
+
+async function refreshSection(section = state.activeSection) {
+  const targetSection = section || "papers";
+
+  if (targetSection === "users") {
+    await Promise.all([loadOverview(), loadUsersPage(state.usersPage.page || 1)]);
+    if (state.userModalOpen && state.selectedUserId) {
+      await loadUserDetail(state.selectedUserId);
+      syncUserForm();
+      renderUserAttempts();
+    }
+    return;
+  }
+
+  await loadOverview();
+
+  if (targetSection === "papers") {
+    await syncPaperSelectionFromOverview();
+    return;
+  }
+
+  if (targetSection === "brokers") {
+    syncBrokerSelectionFromOverview();
+    return;
+  }
+
+  if (targetSection === "admin" && state.currentAdmin) {
+    elements.adminIdentity.textContent = state.currentAdmin.username;
+    elements.adminUsername.value = state.currentAdmin.username;
+  }
 }
 
 async function loadUsersPage(page = state.usersPage.page) {
@@ -730,8 +788,13 @@ async function saveAdmin(event) {
 }
 
 elements.menuItems.forEach((button) => {
-  button.addEventListener("click", () => {
+  button.addEventListener("click", async () => {
     setActiveSection(button.dataset.section);
+    try {
+      await refreshSection(button.dataset.section);
+    } catch (error) {
+      showToast(error.message);
+    }
   });
 });
 

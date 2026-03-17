@@ -473,10 +473,20 @@ app.post("/api/auth/bootstrap", asyncHandler(async (req, res) => {
   const { incomingBrokerId, storedBrokerId } = req.body || {};
   const loginState = await resolveLogin(req, req.body || {});
   const user = loginState.user?.openid ? getUserByOpenId(loginState.user.openid) : null;
-  const storedBroker = getBrokerByBrokerId(storedBrokerId);
-  const incomingBroker = storedBroker ? null : getBrokerByBrokerId(incomingBrokerId);
   const defaultBroker = getDefaultBroker();
-  const sourceBroker = storedBroker || incomingBroker || defaultBroker;
+  const defaultBrokerId = String(defaultBroker?.brokerId || "").trim();
+  const normalizedStoredBrokerId = String(storedBrokerId || "").trim();
+  const storedBroker = getBrokerByBrokerId(normalizedStoredBrokerId);
+  const incomingBroker = getBrokerByBrokerId(incomingBrokerId);
+  const shouldOverrideStoredDefault = Boolean(
+    incomingBroker
+    && storedBroker
+    && defaultBrokerId
+    && storedBroker.brokerId === defaultBrokerId,
+  );
+  const sourceBroker = shouldOverrideStoredDefault
+    ? incomingBroker
+    : (storedBroker || incomingBroker || null);
   const effectiveBroker = loginState.currentBroker
     || sanitizeBroker(req, sourceBroker)
     || sanitizeBroker(req, defaultBroker);
