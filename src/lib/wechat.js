@@ -5,7 +5,7 @@ import {
   wechatMiniCodePage,
 } from "../config.js";
 
-const MINI_CODE_SCENE_PREFIX = "b=";
+const MINI_CODE_SCENE_PREFIX = "i=";
 const MINI_CODE_SCENE_CHAR_PATTERN = /^[0-9A-Za-z!#$&'()*+,/:;=?@\-._~]+$/;
 const ACCESS_TOKEN_RETRY_ERRCODES = new Set([40001, 40014, 42001]);
 

@@ -115,16 +115,8 @@
           <div id="broker-list" class="list-panel"></div>
           <form id="broker-form" class="editor-panel form-panel">
             <div class="form-field">
-              <span>中介人 ID</span>
-              <input id="broker-id" name="brokerId" type="text" required />
-            </div>
-            <div class="form-field">
               <span>中介人名称</span>
-              <input id="broker-name" name="name" type="text" />
-            </div>
-            <div class="form-field">
-              <span>绑定 OpenID</span>
-              <input id="broker-openid" name="linkedOpenId" type="text" />
+              <input id="broker-name" name="name" type="text" required />
             </div>
             <div class="checkbox-row">
               <label class="checkbox-field">
@@ -148,7 +140,7 @@
                 <button id="broker-generate-minicode" class="ghost-button" type="button">生成小程序碼</button>
                 <a id="broker-minicode-download" class="ghost-button link-button-shell" href="#" download hidden>下载小程序碼</a>
               </div>
-              <div class="inline-note">需先填写并保存绑定 OpenID，才可生成专属小程序碼。</div>
+              <div class="inline-note">小程序碼会直接带入当前中介人的内部编号，扫码后按中介人归因。</div>
               <input id="broker-minicode-path" type="hidden" />
             </div>
             <div id="broker-minicode-preview" class="image-preview image-preview--empty">暂未生成小程序碼</div>

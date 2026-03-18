@@ -25,7 +25,6 @@ import {
   getAdminById,
   getBrokerById,
   getBrokerByBrokerId,
-  getBrokerByLinkedOpenId,
   getConfig,
   getDefaultBroker,
   getPaper,
@@ -292,7 +291,14 @@ function sanitizeBroker(req, broker) {
   }
 
   return {
-    ...broker,
+    id: broker.id,
+    name: broker.name,
+    qrImagePath: broker.qrImagePath || "",
+    miniProgramCodePath: broker.miniProgramCodePath || "",
+    enabled: Boolean(broker.enabled),
+    isDefault: Boolean(broker.isDefault),
+    createdAt: broker.createdAt || "",
+    updatedAt: broker.updatedAt || "",
     qrImageUrl: broker.qrImagePath ? toAbsoluteUrl(req, broker.qrImagePath) : "",
     miniProgramCodeUrl: broker.miniProgramCodePath ? toAbsoluteUrl(req, broker.miniProgramCodePath) : "",
   };
@@ -416,7 +422,6 @@ async function resolveLogin(req, payload = {}) {
     loginAvailable: hasWechatLoginConfig(),
     loginWarning: "",
     user: null,
-    currentBroker: null,
   };
 
   const code = String(payload.code || "").trim();
@@ -427,7 +432,6 @@ async function resolveLogin(req, payload = {}) {
   try {
     const session = await exchangeCodeForSession(code);
     response.user = upsertUserByOpenId(session.openid);
-    response.currentBroker = sanitizeBroker(req, getBrokerByLinkedOpenId(session.openid));
   } catch (error) {
     response.loginWarning = error instanceof Error ? error.message : String(error);
   }
@@ -470,25 +474,31 @@ app.post("/api/auth/login", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/auth/bootstrap", asyncHandler(async (req, res) => {
-  const { incomingBrokerId, storedBrokerId } = req.body || {};
+  const { incomingBrokerId, incomingBrokerSource, storedBrokerId } = req.body || {};
   const loginState = await resolveLogin(req, req.body || {});
   const user = loginState.user?.openid ? getUserByOpenId(loginState.user.openid) : null;
   const defaultBroker = getDefaultBroker();
-  const defaultBrokerId = String(defaultBroker?.brokerId || "").trim();
+  const defaultBrokerId = String(defaultBroker?.id || "").trim();
   const normalizedStoredBrokerId = String(storedBrokerId || "").trim();
+  const normalizedIncomingBrokerSource = String(incomingBrokerSource || "").trim().toLowerCase();
   const storedBroker = getBrokerByBrokerId(normalizedStoredBrokerId);
   const incomingBroker = getBrokerByBrokerId(incomingBrokerId);
+  const shouldPreferSceneBroker = Boolean(
+    incomingBroker
+    && normalizedIncomingBrokerSource === "scene",
+  );
   const shouldOverrideStoredDefault = Boolean(
     incomingBroker
     && storedBroker
     && defaultBrokerId
-    && storedBroker.brokerId === defaultBrokerId,
+    && String(storedBroker.id || "") === defaultBrokerId,
   );
-  const sourceBroker = shouldOverrideStoredDefault
+  const sourceBroker = shouldPreferSceneBroker
+    ? incomingBroker
+    : shouldOverrideStoredDefault
     ? incomingBroker
     : (storedBroker || incomingBroker || null);
-  const effectiveBroker = loginState.currentBroker
-    || sanitizeBroker(req, sourceBroker)
+  const effectiveBroker = sanitizeBroker(req, sourceBroker)
     || sanitizeBroker(req, defaultBroker);
   const latestAttempt = user?.openid ? getLatestQuizAttemptByOpenId(user.openid) : null;
 
@@ -497,7 +507,7 @@ app.post("/api/auth/bootstrap", asyncHandler(async (req, res) => {
     user: sanitizeUser(user),
     config: {
       ...getConfig(),
-      defaultBrokerId: defaultBroker?.brokerId || "",
+      defaultBrokerId: defaultBroker?.id || "",
     },
     sourceBroker: sanitizeBroker(req, sourceBroker),
     defaultBroker: sanitizeBroker(req, defaultBroker),
@@ -510,7 +520,7 @@ app.get("/api/config", (_req, res) => {
   res.json({
     config: {
       ...getConfig(),
-      defaultBrokerId: getDefaultBroker()?.brokerId || "",
+      defaultBrokerId: getDefaultBroker()?.id || "",
     },
     papers: listPapers().map(sanitizePaper),
   });
@@ -723,7 +733,7 @@ adminApi.get("/overview", (req, res) => {
   res.json({
     config: {
       ...getConfig(),
-      defaultBrokerId: getDefaultBroker()?.brokerId || "",
+      defaultBrokerId: getDefaultBroker()?.id || "",
     },
     papers: listPapers().map(sanitizePaper),
     brokers: listBrokers().map((broker) => sanitizeBroker(req, broker)),
@@ -842,22 +852,17 @@ adminApi.post("/brokers/:id/generate-minicode", asyncHandler(async (req, res) =>
     return;
   }
 
-  if (!broker.linkedOpenId) {
-    res.status(400).json({ message: "请先为中介人填写并保存绑定 OpenID，再生成小程序碼" });
-    return;
-  }
-
   if (!hasWechatLoginConfig()) {
     res.status(400).json({ message: "服务端未配置 WECHAT_APP_ID / WECHAT_APP_SECRET" });
     return;
   }
 
-  const scene = buildBrokerMiniCodeScene(broker.brokerId);
+  const scene = buildBrokerMiniCodeScene(broker.id);
   const imageBuffer = await generateUnlimitedWxaCode({ scene });
   const codeDirectory = path.join(publicUploadDir, "wxacodes");
   await fs.mkdir(codeDirectory, { recursive: true });
 
-  const fileName = createUploadFileName("minicode", broker.brokerId, ".png");
+  const fileName = createUploadFileName("minicode", broker.id, ".png");
   const absolutePath = path.join(codeDirectory, fileName);
   const relativePath = `/uploads/wxacodes/${fileName}`;
   await fs.writeFile(absolutePath, imageBuffer);

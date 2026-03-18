@@ -32,9 +32,7 @@ function createEmptyPaperTemplate() {
 function createEmptyBrokerForm() {
   return {
     id: 0,
-    brokerId: "",
     name: "",
-    linkedOpenId: "",
     qrImagePath: "",
     qrImageUrl: "",
     miniProgramCodePath: "",
@@ -120,9 +118,7 @@ const elements = {
   paperImportDemos: document.getElementById("paper-import-demos"),
   brokerList: document.getElementById("broker-list"),
   brokerForm: document.getElementById("broker-form"),
-  brokerId: document.getElementById("broker-id"),
   brokerName: document.getElementById("broker-name"),
-  brokerOpenId: document.getElementById("broker-openid"),
   brokerEnabled: document.getElementById("broker-enabled"),
   brokerDefault: document.getElementById("broker-default"),
   brokerImage: document.getElementById("broker-image"),
@@ -217,9 +213,7 @@ function setActiveSection(section) {
 }
 
 function syncBrokerForm() {
-  elements.brokerId.value = state.brokerForm.brokerId;
   elements.brokerName.value = state.brokerForm.name;
-  elements.brokerOpenId.value = state.brokerForm.linkedOpenId;
   elements.brokerEnabled.checked = Boolean(state.brokerForm.enabled);
   elements.brokerDefault.checked = Boolean(state.brokerForm.isDefault);
   elements.brokerQrPath.value = state.brokerForm.qrImagePath || "";
@@ -245,7 +239,7 @@ function syncBrokerForm() {
     elements.brokerMiniCodeDownload.removeAttribute("href");
   }
 
-  elements.brokerMiniCodeGenerate.disabled = !state.selectedBrokerId || !String(state.brokerForm.linkedOpenId || "").trim();
+  elements.brokerMiniCodeGenerate.disabled = !state.selectedBrokerId;
 }
 
 function syncUserForm() {
@@ -300,9 +294,7 @@ function renderBrokerList() {
   const brokers = state.overview?.brokers || [];
   elements.brokerList.innerHTML = brokers.map((broker) => `
     <article class="list-card ${state.selectedBrokerId === broker.id ? "list-card--active" : ""}" data-action="select-broker" data-id="${broker.id}">
-      <div class="list-card__title">${broker.name || broker.brokerId}</div>
-      <div class="list-card__meta">ID: ${broker.brokerId}</div>
-      <div class="list-card__meta">OpenID: ${broker.linkedOpenId || "未绑定"}</div>
+      <div class="list-card__title">${broker.name || `中介人 #${broker.id}`}</div>
       <div class="list-card__meta">小程序碼：${broker.miniProgramCodeUrl ? "已生成" : "未生成"}</div>
       <div class="tag-row">
         ${broker.isDefault ? '<span class="tag tag--primary">默认</span>' : ""}
@@ -322,7 +314,7 @@ function renderUserAttempts() {
       </div>
       <div class="attempt-card__meta">提交时间：${attempt.createdAt}</div>
       <div class="attempt-card__meta">分数：${attempt.score}% · 题数：${attempt.total} · 方式：${attempt.submitMode === "timeout" ? "超时自动交卷" : "手动交卷"}</div>
-      <div class="attempt-card__meta">中介人：${attempt.broker?.name || attempt.broker?.brokerId || "未关联"}</div>
+      <div class="attempt-card__meta">中介人：${attempt.broker?.name || (attempt.broker?.id ? `#${attempt.broker.id}` : "未关联")}</div>
     </article>
   `).join("") || '<div class="attempt-empty">暂无答题记录</div>';
 }
@@ -614,17 +606,15 @@ async function saveBroker(event) {
   event.preventDefault();
 
   const payload = {
-    brokerId: elements.brokerId.value.trim(),
     name: elements.brokerName.value.trim(),
-    linkedOpenId: elements.brokerOpenId.value.trim(),
     qrImagePath: elements.brokerQrPath.value.trim(),
     miniProgramCodePath: elements.brokerMiniCodePath.value.trim(),
     enabled: elements.brokerEnabled.checked,
     isDefault: elements.brokerDefault.checked,
   };
 
-  if (!payload.brokerId) {
-    showToast("请填写中介人 ID");
+  if (!payload.name) {
+    showToast("请填写中介人名称");
     return;
   }
 
@@ -676,11 +666,6 @@ async function uploadBrokerImage(file) {
 async function generateBrokerMiniCode() {
   if (!state.selectedBrokerId) {
     showToast("请先保存中介人资料");
-    return;
-  }
-
-  if (!String(state.brokerForm.linkedOpenId || "").trim()) {
-    showToast("请先填写并保存绑定 OpenID");
     return;
   }
 

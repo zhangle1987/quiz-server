@@ -25,7 +25,6 @@ const DEFAULT_PAPER_QUIZ_CONFIG = {
 };
 
 const DEFAULT_BROKER = {
-  brokerId: "default-broker",
   name: "默认中介人",
   qrImagePath: "",
   miniProgramCodePath: "",
@@ -195,11 +194,9 @@ function serializePaperRow(row, includeQuestions = false) {
 function serializeBrokerRow(row) {
   return {
     id: row.id,
-    brokerId: row.broker_id,
     name: row.name,
     qrImagePath: row.qr_image_url || "",
     miniProgramCodePath: row.mini_program_code_url || "",
-    linkedOpenId: row.linked_openid || "",
     enabled: Boolean(row.enabled),
     isDefault: Boolean(row.is_default),
     createdAt: row.created_at,
@@ -312,7 +309,6 @@ function getDb() {
 
       CREATE TABLE IF NOT EXISTS brokers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        broker_id TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL,
         qr_image_url TEXT NOT NULL DEFAULT '',
         mini_program_code_url TEXT NOT NULL DEFAULT '',
@@ -413,6 +409,52 @@ function ensureBrokerSchema() {
   const db = getDb();
   const columns = db.prepare("PRAGMA table_info(brokers)").all();
   const columnNames = new Set(columns.map((column) => column.name));
+
+  if (columnNames.has("broker_id")) {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE brokers__new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        qr_image_url TEXT NOT NULL DEFAULT '',
+        mini_program_code_url TEXT NOT NULL DEFAULT '',
+        linked_openid TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      INSERT INTO brokers__new (
+        id,
+        name,
+        qr_image_url,
+        mini_program_code_url,
+        linked_openid,
+        enabled,
+        is_default,
+        created_at,
+        updated_at
+      )
+      SELECT
+        id,
+        name,
+        qr_image_url,
+        COALESCE(mini_program_code_url, ''),
+        COALESCE(linked_openid, ''),
+        enabled,
+        is_default,
+        created_at,
+        updated_at
+      FROM brokers;
+
+      DROP TABLE brokers;
+      ALTER TABLE brokers__new RENAME TO brokers;
+      CREATE INDEX IF NOT EXISTS idx_brokers_linked_openid ON brokers (linked_openid);
+      COMMIT;
+    `);
+    return;
+  }
 
   if (!columnNames.has("mini_program_code_url")) {
     db.exec("ALTER TABLE brokers ADD COLUMN mini_program_code_url TEXT NOT NULL DEFAULT ''");
@@ -571,7 +613,6 @@ function ensureDefaultBrokerInvariant() {
     const createdAt = now();
     db.prepare(`
       INSERT INTO brokers (
-        broker_id,
         name,
         qr_image_url,
         mini_program_code_url,
@@ -580,9 +621,8 @@ function ensureDefaultBrokerInvariant() {
         is_default,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      DEFAULT_BROKER.brokerId,
       DEFAULT_BROKER.name,
       DEFAULT_BROKER.qrImagePath,
       DEFAULT_BROKER.miniProgramCodePath,
@@ -913,9 +953,13 @@ export function getBrokerByBrokerId(brokerId, options = {}) {
 
   const { enabledOnly = true } = options;
   const db = getDb();
+  const internalId = Number(brokerId);
+  if (!Number.isFinite(internalId) || internalId <= 0) {
+    return null;
+  }
   const row = enabledOnly
-    ? db.prepare("SELECT * FROM brokers WHERE broker_id = ? AND enabled = 1").get(String(brokerId))
-    : db.prepare("SELECT * FROM brokers WHERE broker_id = ?").get(String(brokerId));
+    ? db.prepare("SELECT * FROM brokers WHERE id = ? AND enabled = 1").get(internalId)
+    : db.prepare("SELECT * FROM brokers WHERE id = ?").get(internalId);
 
   return row ? serializeBrokerRow(row) : null;
 }
@@ -962,17 +1006,17 @@ export function getDefaultBroker() {
 }
 
 export function saveBroker(input = {}) {
-  const brokerId = String(input.brokerId || "").trim();
-  const name = String(input.name || "").trim() || brokerId;
+  const name = String(input.name || "").trim();
   const qrImagePath = String(input.qrImagePath || "").trim();
   const hasMiniProgramCodePath = Object.prototype.hasOwnProperty.call(input, "miniProgramCodePath");
   const inputMiniProgramCodePath = hasMiniProgramCodePath ? String(input.miniProgramCodePath || "").trim() : null;
-  const linkedOpenId = String(input.linkedOpenId || "").trim();
+  const hasLinkedOpenId = Object.prototype.hasOwnProperty.call(input, "linkedOpenId");
+  const inputLinkedOpenId = hasLinkedOpenId ? String(input.linkedOpenId || "").trim() : null;
   const enabled = input.enabled === false || input.enabled === 0 ? 0 : 1;
   const isDefault = Boolean(input.isDefault);
 
-  if (!brokerId) {
-    throw new Error("中介人 ID 不能为空");
+  if (!name) {
+    throw new Error("中介人名称不能为空");
   }
 
   return runInTransaction((db) => {
@@ -988,16 +1032,16 @@ export function saveBroker(input = {}) {
         throw new Error("中介人不存在");
       }
 
-      const miniProgramCodePath = existing.broker_id !== brokerId
-        ? ""
-        : (inputMiniProgramCodePath === null
-          ? String(existing.mini_program_code_url || "").trim()
-          : inputMiniProgramCodePath);
+      const miniProgramCodePath = inputMiniProgramCodePath === null
+        ? String(existing.mini_program_code_url || "").trim()
+        : inputMiniProgramCodePath;
+      const linkedOpenId = inputLinkedOpenId === null
+        ? String(existing.linked_openid || "").trim()
+        : inputLinkedOpenId;
 
       db.prepare(`
         UPDATE brokers
-        SET broker_id = ?,
-            name = ?,
+        SET name = ?,
             qr_image_url = ?,
             mini_program_code_url = ?,
             linked_openid = ?,
@@ -1006,7 +1050,6 @@ export function saveBroker(input = {}) {
             updated_at = ?
         WHERE id = ?
       `).run(
-        brokerId,
         name,
         qrImagePath,
         miniProgramCodePath,
@@ -1018,9 +1061,9 @@ export function saveBroker(input = {}) {
       );
     } else {
       const miniProgramCodePath = inputMiniProgramCodePath === null ? "" : inputMiniProgramCodePath;
+      const linkedOpenId = inputLinkedOpenId === null ? "" : inputLinkedOpenId;
       const result = db.prepare(`
         INSERT INTO brokers (
-          broker_id,
           name,
           qr_image_url,
           mini_program_code_url,
@@ -1029,9 +1072,8 @@ export function saveBroker(input = {}) {
           is_default,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        brokerId,
         name,
         qrImagePath,
         miniProgramCodePath,
@@ -1196,7 +1238,7 @@ export function createQuizAttempt(input = {}) {
       nickname,
       String(paper?.id || "").trim(),
       String(paper?.title || "").trim(),
-      String(broker?.brokerId || "").trim(),
+      String(broker?.id || "").trim(),
       JSON.stringify(broker || null),
       JSON.stringify(paper || null),
       JSON.stringify(summary),
