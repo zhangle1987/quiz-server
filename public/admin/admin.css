@@ -294,6 +294,22 @@ body {
   align-items: flex-start;
 }
 
+.checkbox-field input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  accent-color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.checkbox-field span {
+  line-height: 1.6;
+}
+
 .button-row button:disabled,
 .ghost-button:disabled,
 .primary-button:disabled,
