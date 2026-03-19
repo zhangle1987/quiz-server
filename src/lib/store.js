@@ -16,6 +16,7 @@ import { hashPassword, verifyPassword } from "./adminAuth.js";
 const DEFAULT_CONFIG = {
   defaultQuestionCount: 10,
   questionCountOptions: [10, 20, 30],
+  requireFriendForAnswers: true,
 };
 
 const DEFAULT_PAPER_QUIZ_CONFIG = {
@@ -477,6 +478,7 @@ function runInTransaction(callback) {
 function seedConfig() {
   setConfigValue("defaultQuestionCount", DEFAULT_CONFIG.defaultQuestionCount);
   setConfigValue("questionCountOptions", DEFAULT_CONFIG.questionCountOptions);
+  setConfigValue("requireFriendForAnswers", DEFAULT_CONFIG.requireFriendForAnswers);
 }
 
 function setConfigValue(key, value) {
@@ -530,6 +532,10 @@ function migrateLegacyData() {
           .map((item) => Number(item))
           .filter((item) => Number.isFinite(item) && item > 0),
       );
+    }
+
+    if (typeof parsed.config.requireFriendForAnswers === "boolean") {
+      writeConfigValue("requireFriendForAnswers", parsed.config.requireFriendForAnswers);
     }
   }
 
@@ -657,6 +663,10 @@ export function getConfig() {
     db.prepare("SELECT value FROM app_config WHERE key = ?").get("questionCountOptions")?.value,
     DEFAULT_CONFIG.questionCountOptions,
   );
+  const requireFriendForAnswers = parseJson(
+    db.prepare("SELECT value FROM app_config WHERE key = ?").get("requireFriendForAnswers")?.value,
+    DEFAULT_CONFIG.requireFriendForAnswers,
+  );
 
   return {
     defaultQuestionCount:
@@ -668,6 +678,9 @@ export function getConfig() {
         .map((item) => Number(item))
         .filter((item) => Number.isFinite(item) && item > 0)
       : DEFAULT_CONFIG.questionCountOptions,
+    requireFriendForAnswers: typeof requireFriendForAnswers === "boolean"
+      ? requireFriendForAnswers
+      : DEFAULT_CONFIG.requireFriendForAnswers,
   };
 }
 
@@ -691,8 +704,13 @@ export function updateConfig(input = {}) {
     }
   }
 
+  if (typeof input.requireFriendForAnswers === "boolean") {
+    nextConfig.requireFriendForAnswers = input.requireFriendForAnswers;
+  }
+
   writeConfigValue("defaultQuestionCount", nextConfig.defaultQuestionCount);
   writeConfigValue("questionCountOptions", nextConfig.questionCountOptions);
+  writeConfigValue("requireFriendForAnswers", nextConfig.requireFriendForAnswers);
   return nextConfig;
 }
 

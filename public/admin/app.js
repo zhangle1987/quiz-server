@@ -144,6 +144,8 @@ const elements = {
   userFriendStatus: document.getElementById("user-friend-status"),
   userMeta: document.getElementById("user-meta"),
   userAttemptList: document.getElementById("user-attempt-list"),
+  configForm: document.getElementById("config-form"),
+  configRequireFriendForAnswers: document.getElementById("config-require-friend-for-answers"),
   adminForm: document.getElementById("admin-form"),
   adminUsername: document.getElementById("admin-username"),
   adminPassword: document.getElementById("admin-password"),
@@ -359,6 +361,7 @@ function renderOverview() {
   elements.paperCount.textContent = overview.papers.length;
   elements.brokerCount.textContent = overview.brokers.length;
   elements.userCount.textContent = overview.userCount || 0;
+  elements.configRequireFriendForAnswers.checked = Boolean(overview.config?.requireFriendForAnswers);
   renderPaperList();
   renderBrokerList();
   renderUserTable();
@@ -772,6 +775,24 @@ async function saveAdmin(event) {
   showToast("管理员信息已更新");
 }
 
+async function saveConfig(event) {
+  event.preventDefault();
+
+  const response = await requestJson("/admin/api/config", {
+    method: "POST",
+    body: JSON.stringify({
+      requireFriendForAnswers: elements.configRequireFriendForAnswers.checked,
+    }),
+  });
+
+  state.overview = {
+    ...(state.overview || {}),
+    config: response.config || {},
+  };
+  renderOverview();
+  showToast("结果查看设置已更新");
+}
+
 elements.menuItems.forEach((button) => {
   button.addEventListener("click", async () => {
     setActiveSection(button.dataset.section);
@@ -932,6 +953,10 @@ elements.userModal.addEventListener("click", (event) => {
 
 elements.adminForm.addEventListener("submit", (event) => {
   saveAdmin(event).catch((error) => showToast(error.message));
+});
+
+elements.configForm.addEventListener("submit", (event) => {
+  saveConfig(event).catch((error) => showToast(error.message));
 });
 
 Promise.all([loadSession(), loadOverview(), loadUsersPage(1)])

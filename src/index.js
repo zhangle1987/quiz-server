@@ -312,7 +312,11 @@ function sanitizeUser(user) {
     : null;
 }
 
-function canUserViewAnswers(user) {
+function canUserViewAnswers(user, config = getConfig()) {
+  if (!config?.requireFriendForAnswers) {
+    return true;
+  }
+
   return String(user?.friendStatus || "").trim().toLowerCase() === "added";
 }
 
@@ -322,7 +326,8 @@ function sanitizeQuizAttemptForViewer(req, attempt, viewer, options = {}) {
   }
 
   const { preview = false } = options;
-  const canViewAnswers = canUserViewAnswers(viewer);
+  const config = getConfig();
+  const canViewAnswers = canUserViewAnswers(viewer, config);
   const paper = attempt.paper
     ? {
       id: attempt.paper.id,
@@ -343,7 +348,8 @@ function sanitizeQuizAttemptForViewer(req, attempt, viewer, options = {}) {
     access: {
       friendStatus: viewer?.friendStatus || "pending",
       canViewAnswers,
-      requiresFriend: !canViewAnswers,
+      requiresFriend: Boolean(config.requireFriendForAnswers && !canViewAnswers),
+      requireFriendForAnswers: Boolean(config.requireFriendForAnswers),
     },
     summary: preview || !canViewAnswers ? null : attempt.summary,
     results: preview || !canViewAnswers ? [] : attempt.results,
@@ -470,7 +476,13 @@ app.get("/api/health", (_req, res) => {
 
 app.post("/api/auth/login", asyncHandler(async (req, res) => {
   const loginState = await resolveLogin(req, req.body || {});
-  res.json(loginState);
+  res.json({
+    ...loginState,
+    config: {
+      ...getConfig(),
+      defaultBrokerId: getDefaultBroker()?.id || "",
+    },
+  });
 }));
 
 app.post("/api/auth/bootstrap", asyncHandler(async (req, res) => {

@@ -194,11 +194,25 @@
           <div class="section-head">
             <div>
               <h2 class="section-title">管理员设置</h2>
-              <p class="section-desc">管理员账号首次由服务端环境变量初始化，后续可在这里改账号和密码。</p>
+              <p class="section-desc">管理员账号首次由服务端环境变量初始化，后续可在这里改账号密码，也可调整结果查看策略。</p>
             </div>
           </div>
 
         <div class="single-panel">
+          <form id="config-form" class="form-panel">
+            <div class="form-field">
+              <span>结果查看设置</span>
+              <label class="checkbox-field checkbox-field--stack">
+                <input id="config-require-friend-for-answers" type="checkbox" />
+                <span>答题结束后必须加好友才展示答案与解析</span>
+              </label>
+              <div class="inline-note">关闭后，所有用户交卷后都会直接看到答题结果，小程序也不会再强制填写昵称。</div>
+            </div>
+            <div class="button-row">
+              <button class="primary-button" type="submit">保存结果查看设置</button>
+            </div>
+          </form>
+
           <form id="admin-form" class="form-panel">
             <div class="form-field">
               <span>管理员账号</span>

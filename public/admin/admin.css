@@ -283,6 +283,17 @@ body {
   gap: 12px;
 }
 
+.checkbox-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.checkbox-field--stack {
+  align-items: flex-start;
+}
+
 .button-row button:disabled,
 .ghost-button:disabled,
 .primary-button:disabled,
