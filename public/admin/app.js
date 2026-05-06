@@ -1,7 +1,7 @@
 function createEmptyPaperTemplate() {
   return {
     id: `paper-${Date.now()}`,
-    title: "新题库",
+    title: "新基础题库",
     sourceFile: "manual.json",
     sortOrder: 0,
     quizConfig: {
@@ -71,6 +71,13 @@ function createPaperEditorPayload(paper) {
   const payload = { ...paper };
   delete payload.quizConfig;
   delete payload.sortOrder;
+  delete payload.bankType;
+  delete payload.basePaperId;
+  delete payload.updatePaper;
+  delete payload.updateQuestionCount;
+  delete payload.combinedQuestionCount;
+  delete payload.duplicateQuestionCount;
+  delete payload.rawQuestionCount;
   return payload;
 }
 
@@ -78,8 +85,19 @@ const state = {
   activeSection: "papers",
   overview: null,
   currentAdmin: null,
+  selectedPaperDetail: null,
   selectedPaperId: "",
   paperMode: "create",
+  activePaperBank: "base",
+  paperViewMode: "list",
+  paperQuestionPage: 1,
+  paperQuestionPageSize: 10,
+  selectedQuestionIndex: 0,
+  pendingPdfPreview: null,
+  paperDrafts: {
+    base: null,
+    update: null,
+  },
   paperJson: JSON.stringify(createEmptyPaperTemplate(), null, 2),
   selectedBrokerId: 0,
   brokerForm: createEmptyBrokerForm(),
@@ -106,15 +124,46 @@ const elements = {
   userCount: document.getElementById("user-count"),
   paperList: document.getElementById("paper-list"),
   paperEditorMode: document.getElementById("paper-editor-mode"),
+  paperTitleInput: document.getElementById("paper-title-input"),
   paperSortOrder: document.getElementById("paper-sort-order"),
   paperDurationMinutes: document.getElementById("paper-duration-minutes"),
   paperQuestionCount: document.getElementById("paper-question-count"),
   paperPassThreshold: document.getElementById("paper-pass-threshold"),
   paperJson: document.getElementById("paper-json"),
+  paperBankBase: document.getElementById("paper-bank-base"),
+  paperBankUpdate: document.getElementById("paper-bank-update"),
+  paperBankBaseCount: document.getElementById("paper-bank-base-count"),
+  paperBankUpdateCount: document.getElementById("paper-bank-update-count"),
+  paperViewList: document.getElementById("paper-view-list"),
+  paperViewJson: document.getElementById("paper-view-json"),
+  paperQuestionSummary: document.getElementById("paper-question-summary"),
+  paperQuestionListView: document.getElementById("paper-question-list-view"),
+  paperQuestionTableBody: document.getElementById("paper-question-table-body"),
+  paperQuestionPrevPage: document.getElementById("paper-question-prev-page"),
+  paperQuestionNextPage: document.getElementById("paper-question-next-page"),
+  paperQuestionPageCurrent: document.getElementById("paper-question-page-current"),
+  questionEditorTitle: document.getElementById("question-editor-title"),
+  questionReference: document.getElementById("question-reference"),
+  questionTags: document.getElementById("question-tags"),
+  questionStem: document.getElementById("question-stem"),
+  questionOptionA: document.getElementById("question-option-a"),
+  questionOptionB: document.getElementById("question-option-b"),
+  questionOptionC: document.getElementById("question-option-c"),
+  questionOptionD: document.getElementById("question-option-d"),
+  questionAnswer: document.getElementById("question-answer"),
+  questionExplanation: document.getElementById("question-explanation"),
+  questionApply: document.getElementById("question-apply"),
   paperNew: document.getElementById("paper-new"),
   paperSave: document.getElementById("paper-save"),
   paperDelete: document.getElementById("paper-delete"),
   paperUpload: document.getElementById("paper-upload"),
+  paperUpdateUpload: document.getElementById("paper-update-upload"),
+  pdfPreviewModal: document.getElementById("pdf-preview-modal"),
+  pdfPreviewTitle: document.getElementById("pdf-preview-title"),
+  pdfPreviewSummary: document.getElementById("pdf-preview-summary"),
+  pdfPreviewConfirm: document.getElementById("pdf-preview-confirm"),
+  pdfPreviewCancel: document.getElementById("pdf-preview-cancel"),
+  paperUpdateInfo: document.getElementById("paper-update-info"),
   paperImportDemos: document.getElementById("paper-import-demos"),
   brokerList: document.getElementById("broker-list"),
   brokerForm: document.getElementById("broker-form"),
@@ -186,6 +235,38 @@ async function requestJson(url, options = {}) {
   }
 
   return payload;
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function truncateText(value = "", maxLength = 56) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function parseCurrentPaperJson() {
+  try {
+    return JSON.parse(elements.paperJson.value || "{}");
+  } catch {
+    return null;
+  }
+}
+
+function setCurrentPaperJson(paper) {
+  state.paperJson = JSON.stringify(paper, null, 2);
+  elements.paperJson.value = state.paperJson;
+}
+
+function getOptionText(question, key) {
+  const option = (question.options || []).find((item) => item.key === key);
+  return option?.text || "";
 }
 
 async function loadSession() {
@@ -267,29 +348,340 @@ function syncUserForm() {
   elements.userMeta.textContent = metaParts.join(" · ") || "暂无用户信息";
 }
 
-function setPaperEditor(paper, mode = "edit") {
+function formatPaperUpdateInfo(paper) {
+  const updatePaper = paper.updatePaper;
+  const baseCount = Number(paper.questionCount || 0);
+  const updateCount = Number(paper.updateQuestionCount || updatePaper?.questionCount || 0);
+  const combinedCount = Number(paper.combinedQuestionCount || baseCount + updateCount);
+  if (!updatePaper) {
+    return `当前未上传更新题库。基础题库 ${baseCount} 题，抽题时仅从基础题库随机抽取。`;
+  }
+
+  const sourceText = updatePaper.sourceFile ? `，来源：${updatePaper.sourceFile}` : "";
+  return `当前更新题库 ${updateCount} 题${sourceText}。合计题池 ${combinedCount} 题。`;
+}
+
+function clonePaper(paper) {
+  return paper ? JSON.parse(JSON.stringify(paper)) : null;
+}
+
+function createPaperDraft(paper) {
+  const draft = clonePaper(paper) || createEmptyPaperTemplate();
+  delete draft.updatePaper;
+  delete draft.updateQuestionCount;
+  delete draft.combinedQuestionCount;
+  delete draft.duplicateQuestionCount;
+  delete draft.rawQuestionCount;
+  return draft;
+}
+
+function applyOverallPaperControlsToBasePaper(paper) {
+  const targetPaper = paper || createPaperDraft(createEmptyPaperTemplate());
+  const sortOrder = Number(elements.paperSortOrder.value);
+  const durationMinutes = Number(elements.paperDurationMinutes.value);
+  const questionCount = Number(elements.paperQuestionCount.value);
+  const passThreshold = Number(elements.paperPassThreshold.value);
+
+  targetPaper.title = elements.paperTitleInput.value.trim() || targetPaper.title || "未命名题库";
+  targetPaper.sortOrder = Number.isFinite(sortOrder) ? Math.round(sortOrder) : 0;
+  targetPaper.bankType = "base";
+  targetPaper.basePaperId = "";
+  targetPaper.quizConfig = {
+    durationMinutes: Number.isFinite(durationMinutes) && durationMinutes > 0 ? Math.round(durationMinutes) : 60,
+    questionCount: Number.isFinite(questionCount) && questionCount > 0 ? Math.round(questionCount) : 1,
+    passThreshold: Number.isFinite(passThreshold)
+      ? Math.max(0, Math.min(100, Math.round(passThreshold)))
+      : 70,
+  };
+
+  return targetPaper;
+}
+
+function syncOverallPaperControlsToDrafts() {
+  state.paperDrafts.base = applyOverallPaperControlsToBasePaper(state.paperDrafts.base);
+  if (state.paperDrafts.update) {
+    state.paperDrafts.update.title = state.paperDrafts.base.title;
+  }
+  return state.paperDrafts.base;
+}
+
+function loadPaperDraft(bankType) {
+  const nextBankType = bankType === "update" && state.paperDrafts.update ? "update" : "base";
+  const paper = state.paperDrafts[nextBankType] || createPaperDraft(createEmptyPaperTemplate());
+  if (nextBankType === "update" && state.paperDrafts.base?.title) {
+    paper.title = state.paperDrafts.base.title;
+  }
+
+  state.activePaperBank = nextBankType;
+  state.paperQuestionPage = 1;
+  state.selectedQuestionIndex = 0;
+  setCurrentPaperJson(createPaperEditorPayload(paper));
+  setPaperControlsFromPaper(paper, state.paperMode);
+  renderPaperBankSwitch();
+  renderPaperQuestionWorkspace();
+}
+
+function setPaperControlsFromPaper(paper, mode) {
+  const basePaper = state.paperDrafts.base || state.selectedPaperDetail || paper;
+  elements.paperTitleInput.value = basePaper?.title || "";
+  elements.paperSortOrder.value = String(basePaper?.sortOrder ?? 0);
+  elements.paperDurationMinutes.value = String(basePaper?.quizConfig?.durationMinutes || "");
+  elements.paperQuestionCount.value = String(basePaper?.quizConfig?.questionCount || basePaper?.questionCount || "");
+  elements.paperPassThreshold.value = String(basePaper?.quizConfig?.passThreshold || "");
+  elements.paperUpdateInfo.textContent = mode === "edit" && state.selectedPaperDetail
+    ? formatPaperUpdateInfo(state.selectedPaperDetail)
+    : "保存基础题库后，可继续上传关联的更新题库。";
+  elements.paperEditorMode.textContent = mode === "edit"
+    ? `编辑题库: ${basePaper?.title || "未命名题库"}`
+    : "新增题库";
+  elements.paperSave.textContent = "保存全部题库";
+  elements.paperDelete.textContent = state.activePaperBank === "update" ? "删除更新题库" : "删除基础题库";
+
+  elements.paperSortOrder.disabled = false;
+  elements.paperDurationMinutes.disabled = false;
+  elements.paperQuestionCount.disabled = false;
+  elements.paperPassThreshold.disabled = false;
+}
+
+function renderPaperBankSwitch() {
+  const detail = state.selectedPaperDetail;
+  const baseDraft = state.paperDrafts.base;
+  const updateDraft = state.paperDrafts.update;
+  const baseCount = Number(baseDraft?.questions?.length || detail?.questionCount || 0);
+  const updateCount = Number(updateDraft?.questions?.length || detail?.updatePaper?.questionCount || detail?.updateQuestionCount || 0);
+  elements.paperBankBaseCount.textContent = `${baseCount} 题`;
+  elements.paperBankUpdateCount.textContent = updateCount ? `${updateCount} 题` : "未上传";
+  elements.paperBankBase.closest(".paper-bank-switch__item")
+    ?.classList.toggle("paper-bank-switch__item--active", state.activePaperBank === "base");
+  elements.paperBankUpdate.closest(".paper-bank-switch__item")
+    ?.classList.toggle("paper-bank-switch__item--active", state.activePaperBank === "update");
+  elements.paperBankUpdate.disabled = state.paperMode !== "edit" || !updateDraft;
+  elements.paperUpdateUpload.closest(".paper-bank-switch__upload")
+    ?.classList.toggle("is-disabled", state.paperMode !== "edit" || !state.selectedPaperId);
+}
+
+function setPaperEditor(paper, mode = "edit", bankType = "base") {
   state.paperMode = mode;
   state.selectedPaperId = mode === "edit" ? paper.id : "";
-  state.paperJson = JSON.stringify(createPaperEditorPayload(paper), null, 2);
-  elements.paperSortOrder.value = String(paper.sortOrder ?? 0);
-  elements.paperDurationMinutes.value = String(paper.quizConfig?.durationMinutes || "");
-  elements.paperQuestionCount.value = String(paper.quizConfig?.questionCount || paper.questionCount || "");
-  elements.paperPassThreshold.value = String(paper.quizConfig?.passThreshold || "");
-  elements.paperJson.value = state.paperJson;
-  elements.paperEditorMode.textContent = mode === "edit" ? `编辑题库: ${paper.title}` : "新增题库";
+  state.selectedPaperDetail = mode === "edit" ? paper : null;
+  state.paperDrafts = {
+    base: createPaperDraft(paper),
+    update: mode === "edit" && paper.updatePaper ? createPaperDraft(paper.updatePaper) : null,
+  };
+
+  loadPaperDraft(bankType);
 }
 
 function renderPaperList() {
   const papers = state.overview?.papers || [];
   elements.paperList.innerHTML = papers.map((paper) => `
     <article class="list-card ${state.selectedPaperId === paper.id ? "list-card--active" : ""}" data-action="select-paper" data-id="${paper.id}">
-      <div class="list-card__title">${paper.title}</div>
-      <div class="list-card__meta">排序值：${paper.sortOrder ?? 0}</div>
-      <div class="list-card__meta">题库共 ${paper.questionCount} 题，考试抽取 ${paper.quizConfig?.questionCount || paper.questionCount} 题</div>
-      <div class="list-card__meta">限时 ${paper.quizConfig?.durationMinutes || 0} 分钟，合格线 ${paper.quizConfig?.passThreshold || 70}%</div>
-      <div class="list-card__meta">来源：${paper.sourceFile || "手动编辑"}</div>
+      <div class="list-card__title">${escapeHtml(paper.title)}</div>
+      <div class="list-card__meta">排序值：${paper.sortOrder ?? 0} · 抽取 ${paper.quizConfig?.questionCount || paper.questionCount} 题 · 限时 ${paper.quizConfig?.durationMinutes || 0} 分钟</div>
+      <div class="paper-tree">
+        <div class="paper-tree__row">
+          <div>
+            <div class="paper-tree__name">基础题库</div>
+            <div class="paper-tree__meta">${paper.questionCount} 题 · ${escapeHtml(paper.sourceFile || "手动编辑")}</div>
+          </div>
+        </div>
+        <div class="paper-tree__row">
+          <div>
+            <div class="paper-tree__name">更新题库</div>
+            <div class="paper-tree__meta">${paper.updateQuestionCount || 0} 题 · ${escapeHtml(paper.updatePaper ? (paper.updatePaper.sourceFile || "手动编辑") : "未上传")}</div>
+          </div>
+        </div>
+      </div>
+      <div class="list-card__meta">合计题池：${paper.combinedQuestionCount || paper.questionCount} 题${paper.duplicateQuestionCount ? `，已按内容去重 ${paper.duplicateQuestionCount} 题` : ""}</div>
     </article>
   `).join("") || '<article class="list-card"><div class="list-card__title">暂无题库</div></article>';
+}
+
+function syncTitleInputToJson() {
+  const nextTitle = elements.paperTitleInput.value.trim();
+  if (state.paperDrafts.base) {
+    state.paperDrafts.base.title = nextTitle;
+  }
+  if (state.paperDrafts.update) {
+    state.paperDrafts.update.title = nextTitle;
+  }
+
+  const paper = parseCurrentPaperJson();
+  if (!paper) {
+    return null;
+  }
+  paper.title = nextTitle;
+  setCurrentPaperJson(paper);
+  return paper;
+}
+
+function setPaperViewMode(mode) {
+  const nextMode = mode === "json" ? "json" : "list";
+  if (state.paperViewMode === "list" && nextMode === "json" && getCurrentQuestions().length) {
+    try {
+      applyQuestionEdit();
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
+  }
+
+  state.paperViewMode = nextMode;
+  elements.paperViewList.classList.toggle("segmented-control__item--active", state.paperViewMode === "list");
+  elements.paperViewJson.classList.toggle("segmented-control__item--active", state.paperViewMode === "json");
+  elements.paperQuestionListView.hidden = state.paperViewMode !== "list";
+  elements.paperJson.hidden = state.paperViewMode !== "json";
+  if (state.paperViewMode === "list") {
+    renderPaperQuestionWorkspace();
+  }
+}
+
+function getCurrentQuestions() {
+  const paper = parseCurrentPaperJson();
+  return Array.isArray(paper?.questions) ? paper.questions : [];
+}
+
+function getQuestionPageInfo(questions) {
+  const pageSize = state.paperQuestionPageSize;
+  const totalPages = Math.max(1, Math.ceil(questions.length / pageSize));
+  const page = Math.min(Math.max(1, state.paperQuestionPage), totalPages);
+  const start = (page - 1) * pageSize;
+  return {
+    page,
+    totalPages,
+    start,
+    items: questions.slice(start, start + pageSize),
+  };
+}
+
+function syncQuestionForm(question, index) {
+  const hasQuestion = Boolean(question);
+  elements.questionEditorTitle.textContent = hasQuestion ? `题目 ${index + 1}` : "题目编辑";
+  elements.questionReference.value = question?.reference || "";
+  elements.questionTags.value = Array.isArray(question?.tags) ? question.tags.join(", ") : "";
+  elements.questionStem.value = question?.stem || "";
+  elements.questionOptionA.value = getOptionText(question || {}, "A");
+  elements.questionOptionB.value = getOptionText(question || {}, "B");
+  elements.questionOptionC.value = getOptionText(question || {}, "C");
+  elements.questionOptionD.value = getOptionText(question || {}, "D");
+  elements.questionAnswer.value = ["A", "B", "C", "D"].includes(question?.answer) ? question.answer : "A";
+  elements.questionExplanation.value = question?.explanation || "";
+
+  [
+    elements.questionReference,
+    elements.questionTags,
+    elements.questionStem,
+    elements.questionOptionA,
+    elements.questionOptionB,
+    elements.questionOptionC,
+    elements.questionOptionD,
+    elements.questionAnswer,
+    elements.questionExplanation,
+    elements.questionApply,
+  ].forEach((element) => {
+    element.disabled = !hasQuestion;
+  });
+}
+
+function renderPaperQuestionWorkspace() {
+  const paper = parseCurrentPaperJson();
+  const questions = Array.isArray(paper?.questions) ? paper.questions : [];
+  const pageInfo = getQuestionPageInfo(questions);
+  state.paperQuestionPage = pageInfo.page;
+  const selectedIndex = Math.min(Math.max(0, state.selectedQuestionIndex), Math.max(0, questions.length - 1));
+  state.selectedQuestionIndex = selectedIndex;
+
+  elements.paperQuestionSummary.textContent = paper
+    ? `${state.activePaperBank === "update" ? "更新题库" : "基础题库"} · ${questions.length} 题`
+    : "JSON 格式不合法";
+  elements.paperQuestionTableBody.innerHTML = pageInfo.items.map((question, offset) => {
+    const index = pageInfo.start + offset;
+    const activeClass = index === state.selectedQuestionIndex ? "question-row--active" : "";
+    return `
+      <tr class="question-row ${activeClass}" data-action="select-question" data-index="${index}">
+        <td>${index + 1}</td>
+        <td><div class="question-row__stem">${escapeHtml(truncateText(question.stem, 72))}</div></td>
+        <td>${escapeHtml(question.answer || "")}</td>
+      </tr>
+    `;
+  }).join("") || '<tr><td class="data-table__empty" colspan="3">暂无题目</td></tr>';
+
+  elements.paperQuestionPageCurrent.textContent = `第 ${pageInfo.page} / ${pageInfo.totalPages} 页`;
+  elements.paperQuestionPrevPage.disabled = pageInfo.page <= 1;
+  elements.paperQuestionNextPage.disabled = pageInfo.page >= pageInfo.totalPages;
+  syncQuestionForm(questions[selectedIndex], selectedIndex);
+}
+
+function applyQuestionEdit() {
+  const paper = parseCurrentPaperJson();
+  if (!paper || !Array.isArray(paper.questions)) {
+    throw new Error("题库 JSON 格式不合法");
+  }
+
+  const index = state.selectedQuestionIndex;
+  const current = paper.questions[index];
+  if (!current) {
+    throw new Error("请先选择题目");
+  }
+
+  paper.questions[index] = {
+    ...current,
+    number: index + 1,
+    reference: elements.questionReference.value.trim(),
+    tags: elements.questionTags.value
+      .split(/[,，]/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+    stem: elements.questionStem.value.trim(),
+    options: [
+      { key: "A", text: elements.questionOptionA.value.trim() },
+      { key: "B", text: elements.questionOptionB.value.trim() },
+      { key: "C", text: elements.questionOptionC.value.trim() },
+      { key: "D", text: elements.questionOptionD.value.trim() },
+    ],
+    answer: elements.questionAnswer.value,
+    explanation: elements.questionExplanation.value.trim(),
+  };
+  setCurrentPaperJson(paper);
+  renderPaperQuestionWorkspace();
+}
+
+function renderPdfPreviewModal() {
+  const preview = state.pendingPdfPreview;
+  if (!preview) {
+    return;
+  }
+
+  const summary = preview.summary || {};
+  const bankLabel = preview.bankType === "update" ? "更新题库" : "基础题库";
+  elements.pdfPreviewTitle.textContent = `${bankLabel} PDF 解析成功`;
+  elements.pdfPreviewSummary.innerHTML = [
+    ["PDF 文件", preview.fileName || summary.sourceFile || ""],
+    ["识别状态", "成功"],
+    ["题库名称", summary.title || ""],
+    ["唯一题目数量", `${summary.questionCount || 0} 题`],
+    ["PDF 原始题目行", `${summary.rawQuestionCount || summary.questionCount || 0} 行`],
+    ["内容去重数量", `${summary.duplicateQuestionCount || 0} 题`],
+    ["导入位置", bankLabel],
+  ].map(([label, value]) => `
+    <div class="pdf-preview-summary__row">
+      <div class="pdf-preview-summary__label">${escapeHtml(label)}</div>
+      <div class="pdf-preview-summary__value">${escapeHtml(value)}</div>
+    </div>
+  `).join("");
+  elements.pdfPreviewModal.classList.add("modal--open");
+}
+
+async function closePdfPreviewModal({ cancel = false } = {}) {
+  const token = state.pendingPdfPreview?.token;
+  elements.pdfPreviewModal.classList.remove("modal--open");
+  state.pendingPdfPreview = null;
+  if (cancel && token) {
+    await requestJson("/admin/api/upload-pdf/cancel", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }).catch(() => {});
+  }
 }
 
 function renderBrokerList() {
@@ -407,7 +799,7 @@ async function syncPaperSelectionFromOverview() {
     return;
   }
 
-  await loadPaperDetail(nextPaperId);
+  await loadPaperDetail(nextPaperId, state.activePaperBank);
 }
 
 async function loadOverview() {
@@ -469,9 +861,9 @@ async function loadUsersPage(page = state.usersPage.page) {
   renderUserTable();
 }
 
-async function loadPaperDetail(paperId) {
+async function loadPaperDetail(paperId, bankType = state.activePaperBank) {
   const payload = await requestJson(`/admin/api/papers/${encodeURIComponent(paperId)}`);
-  setPaperEditor(payload.paper, "edit");
+  setPaperEditor(payload.paper, "edit", bankType);
   renderPaperList();
 }
 
@@ -522,60 +914,114 @@ async function openUserDetail(userId) {
 function parsePaperJson() {
   try {
     const paper = JSON.parse(elements.paperJson.value);
-    const sortOrder = Number(elements.paperSortOrder.value);
-    const durationMinutes = Number(elements.paperDurationMinutes.value);
-    const questionCount = Number(elements.paperQuestionCount.value);
-    const passThreshold = Number(elements.paperPassThreshold.value);
+    const overallTitle = elements.paperTitleInput.value.trim() || state.paperDrafts.base?.title || paper.title || "未命名题库";
+    paper.title = overallTitle;
 
-    paper.sortOrder = Number.isFinite(sortOrder) ? Math.round(sortOrder) : 0;
-    paper.quizConfig = {
-      durationMinutes: Number.isFinite(durationMinutes) && durationMinutes > 0 ? Math.round(durationMinutes) : 60,
-      questionCount: Number.isFinite(questionCount) && questionCount > 0 ? Math.round(questionCount) : 1,
-      passThreshold: Number.isFinite(passThreshold)
-        ? Math.max(0, Math.min(100, Math.round(passThreshold)))
-        : 70,
-    };
+    if (state.activePaperBank === "update") {
+      paper.bankType = "update";
+      paper.basePaperId = state.selectedPaperId;
+    } else {
+      applyOverallPaperControlsToBasePaper(paper);
+    }
     return paper;
   } catch {
     throw new Error("题库 JSON 格式不合法");
   }
 }
 
-async function savePaper() {
-  const paper = parsePaperJson();
+function captureActivePaperDraft() {
+  if (state.paperViewMode === "list" && getCurrentQuestions().length) {
+    applyQuestionEdit();
+  }
 
-  if (state.paperMode === "edit" && state.selectedPaperId && paper.id !== state.selectedPaperId) {
-    await requestJson("/admin/api/papers", {
-      method: "POST",
-      body: JSON.stringify({ paper }),
-    });
-    await requestJson(`/admin/api/papers/${encodeURIComponent(state.selectedPaperId)}`, {
-      method: "DELETE",
-    });
-    state.selectedPaperId = paper.id;
-  } else if (state.paperMode === "edit" && state.selectedPaperId) {
+  const paper = parsePaperJson();
+  if (state.activePaperBank === "base" && state.paperMode === "edit" && state.selectedPaperId) {
+    paper.id = state.selectedPaperId;
+  }
+  if (state.activePaperBank === "update" && state.selectedPaperDetail?.updatePaper?.id) {
+    paper.id = state.selectedPaperDetail.updatePaper.id;
+  }
+
+  state.paperDrafts[state.activePaperBank] = paper;
+  syncOverallPaperControlsToDrafts();
+  return state.paperDrafts[state.activePaperBank];
+}
+
+async function savePaper() {
+  const activeBank = state.activePaperBank;
+  captureActivePaperDraft();
+
+  const basePaper = state.paperDrafts.base;
+  if (!basePaper?.id || !Array.isArray(basePaper.questions) || !basePaper.questions.length) {
+    throw new Error("基础题库内容不完整，无法保存");
+  }
+
+  basePaper.bankType = "base";
+  basePaper.basePaperId = "";
+
+  if (state.paperMode === "edit" && state.selectedPaperId) {
+    basePaper.id = state.selectedPaperId;
     await requestJson(`/admin/api/papers/${encodeURIComponent(state.selectedPaperId)}`, {
       method: "PUT",
-      body: JSON.stringify({ paper }),
+      body: JSON.stringify({ paper: basePaper }),
     });
-    state.selectedPaperId = paper.id;
   } else {
-    await requestJson("/admin/api/papers", {
+    const response = await requestJson("/admin/api/papers", {
       method: "POST",
-      body: JSON.stringify({ paper }),
+      body: JSON.stringify({ paper: basePaper }),
     });
-    state.selectedPaperId = paper.id;
+    state.selectedPaperId = response.paper?.id || basePaper.id;
+  }
+
+  const updatePaper = state.paperDrafts.update;
+  let savedUpdatePaper = false;
+  if (updatePaper?.id) {
+    const updatePaperId = state.selectedPaperDetail?.updatePaper?.id || updatePaper.id;
+    updatePaper.id = updatePaperId;
+    updatePaper.title = basePaper.title;
+    updatePaper.bankType = "update";
+    updatePaper.basePaperId = state.selectedPaperId;
+    await requestJson(`/admin/api/papers/${encodeURIComponent(updatePaperId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ paper: updatePaper }),
+    });
+    savedUpdatePaper = true;
   }
 
   state.paperMode = "edit";
   await loadOverview();
-  await loadPaperDetail(state.selectedPaperId);
-  showToast("题库已保存");
+  await loadPaperDetail(state.selectedPaperId, activeBank === "update" && savedUpdatePaper ? "update" : "base");
+  showToast(savedUpdatePaper ? "基础题库和更新题库已保存" : "基础题库已保存");
 }
 
 async function deleteCurrentPaper() {
   if (!state.selectedPaperId || state.paperMode !== "edit") {
-    showToast("请先选择要删除的题库");
+    showToast("请先选择要删除的基础题库");
+    return;
+  }
+
+  if (state.activePaperBank === "update") {
+    const updatePaper = parseCurrentPaperJson();
+    const updatePaperId = state.selectedPaperDetail?.updatePaper?.id || updatePaper?.id;
+    if (!updatePaperId) {
+      showToast("当前基础题库还没有更新题库");
+      return;
+    }
+    const confirmed = window.confirm("确定删除当前更新题库吗？");
+    if (!confirmed) {
+      return;
+    }
+    await requestJson(`/admin/api/papers/${encodeURIComponent(updatePaperId)}`, {
+      method: "DELETE",
+    });
+    await loadOverview();
+    await loadPaperDetail(state.selectedPaperId, "base");
+    showToast("更新题库已删除");
+    return;
+  }
+
+  const confirmed = window.confirm("删除基础题库会同时删除关联的更新题库。确定继续吗？");
+  if (!confirmed) {
     return;
   }
 
@@ -585,23 +1031,59 @@ async function deleteCurrentPaper() {
   state.selectedPaperId = "";
   setPaperEditor(createEmptyPaperTemplate(), "create");
   await loadOverview();
-  showToast("题库已删除");
+  showToast("基础题库已删除");
 }
 
-async function uploadPdf(file) {
+async function uploadPdf(file, options = {}) {
+  const bankType = String(options.bankType || "base").trim().toLowerCase();
+  if (bankType === "update" && (!state.selectedPaperId || state.paperMode !== "edit")) {
+    showToast("请先选择基础题库");
+    return;
+  }
+
   const formData = new FormData();
   formData.append("pdf", file);
-  if (state.paperMode === "edit" && state.selectedPaperId) {
-    formData.append("replacePaperId", state.selectedPaperId);
-  }
+  formData.append("bankType", bankType);
 
   const payload = await requestJson("/admin/api/upload-pdf", {
     method: "POST",
     body: formData,
   });
 
+  state.pendingPdfPreview = {
+    token: payload.token,
+    summary: payload.summary || {},
+    fileName: file.name,
+    bankType,
+    basePaperId: bankType === "update" ? state.selectedPaperId : "",
+    replacePaperId: bankType === "base" && state.paperMode === "edit" ? state.selectedPaperId : "",
+  };
+  renderPdfPreviewModal();
+  showToast(payload.message || "PDF 解析完成");
+}
+
+async function confirmPdfUpload() {
+  const preview = state.pendingPdfPreview;
+  if (!preview?.token) {
+    showToast("没有待确认的 PDF");
+    return;
+  }
+
+  const payload = await requestJson("/admin/api/upload-pdf/confirm", {
+    method: "POST",
+    body: JSON.stringify({
+      token: preview.token,
+      bankType: preview.bankType,
+      basePaperId: preview.basePaperId,
+      replacePaperId: preview.replacePaperId,
+    }),
+  });
+
+  const nextPaperId = preview.bankType === "update" ? preview.basePaperId : payload.paper.id;
+  const nextBankType = preview.bankType;
+  await closePdfPreviewModal();
   await loadOverview();
-  await loadPaperDetail(payload.paper.id);
+  await loadPaperDetail(nextPaperId, nextBankType);
   showToast(payload.message || "PDF 上传成功");
 }
 
@@ -815,12 +1297,85 @@ elements.paperList.addEventListener("click", (event) => {
     return;
   }
 
-  loadPaperDetail(target.dataset.id).catch((error) => showToast(error.message));
+  loadPaperDetail(target.dataset.id, "base").catch((error) => showToast(error.message));
 });
 
 elements.paperNew.addEventListener("click", () => {
+  state.selectedPaperDetail = null;
+  state.activePaperBank = "base";
   setPaperEditor(createEmptyPaperTemplate(), "create");
   renderPaperList();
+});
+
+elements.paperTitleInput.addEventListener("input", () => {
+  syncTitleInputToJson();
+});
+
+[elements.paperBankBase, elements.paperBankUpdate].forEach((button) => {
+  button.addEventListener("click", () => {
+    if (button.disabled || state.paperMode !== "edit" || !state.selectedPaperDetail) {
+      return;
+    }
+    const bankType = button.dataset.bankType;
+    if (bankType === state.activePaperBank) {
+      return;
+    }
+    if (!state.paperDrafts[bankType]) {
+      showToast("当前基础题库还没有更新题库");
+      return;
+    }
+    try {
+      captureActivePaperDraft();
+      loadPaperDraft(bankType);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+});
+
+[elements.paperViewList, elements.paperViewJson].forEach((button) => {
+  button.addEventListener("click", () => {
+    setPaperViewMode(button.dataset.viewMode);
+  });
+});
+
+elements.paperQuestionTableBody.addEventListener("click", (event) => {
+  const row = event.target.closest("[data-action='select-question']");
+  if (!row) {
+    return;
+  }
+  state.selectedQuestionIndex = Number(row.dataset.index || 0);
+  renderPaperQuestionWorkspace();
+});
+
+elements.paperQuestionPrevPage.addEventListener("click", () => {
+  if (state.paperQuestionPage <= 1) {
+    return;
+  }
+  state.paperQuestionPage -= 1;
+  state.selectedQuestionIndex = (state.paperQuestionPage - 1) * state.paperQuestionPageSize;
+  renderPaperQuestionWorkspace();
+});
+
+elements.paperQuestionNextPage.addEventListener("click", () => {
+  state.paperQuestionPage += 1;
+  state.selectedQuestionIndex = (state.paperQuestionPage - 1) * state.paperQuestionPageSize;
+  renderPaperQuestionWorkspace();
+});
+
+elements.questionApply.addEventListener("click", () => {
+  try {
+    applyQuestionEdit();
+    showToast("当前题目已更新，保存题库后生效");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+elements.paperJson.addEventListener("input", () => {
+  if (state.paperViewMode === "list") {
+    renderPaperQuestionWorkspace();
+  }
 });
 
 elements.paperSave.addEventListener("click", () => {
@@ -839,6 +1394,30 @@ elements.paperUpload.addEventListener("change", (event) => {
 
   uploadPdf(file).catch((error) => showToast(error.message));
   event.target.value = "";
+});
+
+elements.paperUpdateUpload.addEventListener("change", (event) => {
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  uploadPdf(file, { bankType: "update" }).catch((error) => showToast(error.message));
+  event.target.value = "";
+});
+
+elements.pdfPreviewConfirm.addEventListener("click", () => {
+  confirmPdfUpload().catch((error) => showToast(error.message));
+});
+
+elements.pdfPreviewCancel.addEventListener("click", () => {
+  closePdfPreviewModal({ cancel: true }).catch((error) => showToast(error.message));
+});
+
+elements.pdfPreviewModal.addEventListener("click", (event) => {
+  if (event.target.dataset.action === "close-pdf-preview") {
+    closePdfPreviewModal({ cancel: true }).catch((error) => showToast(error.message));
+  }
 });
 
 elements.paperImportDemos.addEventListener("click", async () => {
@@ -962,6 +1541,7 @@ elements.configForm.addEventListener("submit", (event) => {
 Promise.all([loadSession(), loadOverview(), loadUsersPage(1)])
   .then(() => {
     setActiveSection("papers");
+    setPaperViewMode("list");
     if (!state.selectedPaperId) {
       setPaperEditor(createEmptyPaperTemplate(), "create");
     }

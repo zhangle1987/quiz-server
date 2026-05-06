@@ -19,6 +19,7 @@ import {
   authenticateAdmin,
   createQuizAttempt,
   createOrReplacePaper,
+  createOrReplaceUpdatePaper,
   deleteBroker,
   deletePaper,
   deleteUser,
@@ -28,6 +29,7 @@ import {
   getConfig,
   getDefaultBroker,
   getPaper,
+  getQuestionBankForBase,
   getLatestQuizAttemptByOpenId,
   getQuizAttemptByIdForOpenId,
   getUserById,
@@ -150,7 +152,7 @@ const pdfUpload = createUploadMiddleware({
   fallbackExtension: ".pdf",
   allowedMimeTypes: ["application/pdf"],
   allowedExtensions: [".pdf"],
-  fileSizeLimit: 20 * 1024 * 1024,
+  fileSizeLimit: 150 * 1024 * 1024,
   fileDescription: "PDF 文件",
 });
 
@@ -163,15 +165,35 @@ const imageUpload = createUploadMiddleware({
 });
 
 function sanitizePaper(paper) {
-  return {
+  const payload = {
     id: paper.id,
     title: paper.title,
     sourceFile: paper.sourceFile,
     importedAt: paper.importedAt,
     updatedAt: paper.updatedAt,
     questionCount: paper.questionCount,
+    bankType: paper.bankType || "base",
+    basePaperId: paper.basePaperId || "",
+    updateQuestionCount: Number(paper.updateQuestionCount || 0),
+    combinedQuestionCount: Number(paper.combinedQuestionCount || paper.questionCount || 0),
+    duplicateQuestionCount: Number(paper.duplicateQuestionCount || 0),
     quizConfig: paper.quizConfig,
   };
+
+  if (paper.updatePaper) {
+    payload.updatePaper = {
+      id: paper.updatePaper.id,
+      title: paper.title,
+      sourceFile: paper.updatePaper.sourceFile,
+      importedAt: paper.updatePaper.importedAt,
+      updatedAt: paper.updatePaper.updatedAt,
+      questionCount: paper.updatePaper.questionCount,
+      bankType: paper.updatePaper.bankType || "update",
+      basePaperId: paper.updatePaper.basePaperId || paper.id,
+    };
+  }
+
+  return payload;
 }
 
 function containsCjk(value = "") {
@@ -194,6 +216,113 @@ function decodeUploadedName(originalName = "") {
   }
 
   return normalized;
+}
+
+function getPdfPreviewPath(token) {
+  const normalizedToken = String(token || "").trim();
+  if (!/^[a-f0-9]{32}$/i.test(normalizedToken)) {
+    return "";
+  }
+  return path.join(tempUploadDir, `pdf-preview-${normalizedToken}.json`);
+}
+
+async function cleanupExpiredPdfPreviews() {
+  const expiresAt = Date.now() - 6 * 60 * 60 * 1000;
+  const entries = await fs.readdir(tempUploadDir).catch(() => []);
+  await Promise.all(entries
+    .filter((fileName) => /^pdf-preview-[a-f0-9]{32}\.json$/i.test(fileName))
+    .map(async (fileName) => {
+      const filePath = path.join(tempUploadDir, fileName);
+      const stat = await fs.stat(filePath).catch(() => null);
+      if (stat && stat.mtimeMs < expiresAt) {
+        await fs.unlink(filePath).catch(() => {});
+      }
+    }));
+}
+
+function summarizeParsedPaper(parsedPaper) {
+  return {
+    title: parsedPaper.title,
+    sourceFile: parsedPaper.sourceFile,
+    questionCount: Number(parsedPaper.questionCount || 0),
+    rawQuestionCount: Number(parsedPaper.rawQuestionCount || parsedPaper.questionCount || 0),
+    duplicateQuestionCount: Number(parsedPaper.duplicateQuestionCount || 0),
+    firstQuestion: parsedPaper.questions?.[0]?.stem || "",
+    status: "success",
+  };
+}
+
+async function writePdfPreview(parsedPaper) {
+  await cleanupExpiredPdfPreviews();
+  const token = crypto.randomUUID().replace(/-/g, "");
+  const previewPath = getPdfPreviewPath(token);
+  await fs.writeFile(previewPath, JSON.stringify({
+    createdAt: new Date().toISOString(),
+    paper: parsedPaper,
+  }), "utf8");
+  return token;
+}
+
+async function readPdfPreview(token) {
+  const previewPath = getPdfPreviewPath(token);
+  if (!previewPath) {
+    return null;
+  }
+
+  const content = await fs.readFile(previewPath, "utf8").catch(() => "");
+  if (!content) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(content)?.paper || null;
+  } catch {
+    return null;
+  }
+}
+
+async function deletePdfPreview(token) {
+  const previewPath = getPdfPreviewPath(token);
+  if (previewPath) {
+    await fs.unlink(previewPath).catch(() => {});
+  }
+}
+
+function saveParsedPdfPaper(parsedPaper, options = {}) {
+  const replacePaperId = String(options.replacePaperId || "").trim();
+  const bankType = String(options.bankType || "base").trim().toLowerCase();
+  const basePaperId = String(options.basePaperId || "").trim();
+  const existingPaper = replacePaperId ? getPaper(replacePaperId) : null;
+  const paper = bankType === "update"
+    ? createOrReplaceUpdatePaper(basePaperId, parsedPaper)
+    : replacePaperId
+    ? createOrReplacePaper(
+      {
+        ...parsedPaper,
+        id: replacePaperId,
+        sortOrder: existingPaper?.sortOrder ?? parsedPaper.sortOrder,
+        quizConfig: existingPaper?.quizConfig || parsedPaper.quizConfig,
+      },
+      { replacePaperId },
+    )
+    : upsertPaper({
+      ...parsedPaper,
+      bankType: "base",
+      basePaperId: "",
+      id: `${parsedPaper.id}-${crypto.randomUUID().slice(0, 8)}`,
+    });
+  const responsePaper = bankType === "update"
+    ? getQuestionBankForBase(basePaperId) || paper
+    : paper;
+
+  return {
+    message: bankType === "update"
+      ? "更新题库已上传"
+      : replacePaperId
+      ? "基础题库已用 PDF 更新"
+      : "基础题库 PDF 上传成功",
+    paper: responsePaper,
+  };
 }
 
 function shuffle(items) {
@@ -547,7 +676,7 @@ app.get("/api/papers", (_req, res) => {
 app.get("/api/question-bank", (req, res) => {
   const paperId = req.query.paperId;
   const papers = listPapers();
-  const paper = getPaper(paperId) || getPaper(papers[0]?.id);
+  const paper = getQuestionBankForBase(paperId) || getQuestionBankForBase(papers[0]?.id);
   if (!paper) {
     res.status(404).json({ message: "没有可用题库" });
     return;
@@ -560,9 +689,9 @@ app.get("/api/question-bank", (req, res) => {
 
   const questions = shuffle(paper.questions)
     .slice(0, count)
-    .map((question) => ({
+    .map((question, index) => ({
       id: question.id,
-      number: question.number,
+      number: index + 1,
       reference: question.reference,
       tags: question.tags,
       stem: question.stem,
@@ -624,7 +753,7 @@ app.post("/api/quiz/grade", (req, res) => {
     openid,
     nickname = "",
   } = req.body || {};
-  const paper = getPaper(paperId);
+  const paper = getQuestionBankForBase(paperId);
 
   if (!paper) {
     res.status(404).json({ message: "题库不存在" });
@@ -653,13 +782,13 @@ app.post("/api/quiz/grade", (req, res) => {
   const resultItems = normalizedQuestionIds
     .map((questionId) => questionMap.get(questionId))
     .filter(Boolean)
-    .map((question) => {
+    .map((question, index) => {
       const userAnswer = answerMap.get(question.id) || "";
       const isAnswered = Boolean(userAnswer);
       const isCorrect = userAnswer === question.answer;
       return {
         questionId: question.id,
-        number: question.number,
+        number: index + 1,
         stem: question.stem,
         options: question.options,
         reference: question.reference,
@@ -761,7 +890,18 @@ adminApi.get("/papers/:paperId", (req, res) => {
     return;
   }
 
-  res.json({ paper });
+  const questionBank = paper.bankType === "base" ? getQuestionBankForBase(paper.id) : null;
+  res.json({
+    paper: questionBank
+      ? {
+        ...paper,
+        updatePaper: questionBank.updatePaper,
+        updateQuestionCount: questionBank.updateQuestionCount,
+        combinedQuestionCount: questionBank.combinedQuestionCount,
+        duplicateQuestionCount: questionBank.duplicateQuestionCount,
+      }
+      : paper,
+  });
 });
 
 adminApi.post("/papers", (req, res) => {
@@ -814,30 +954,47 @@ adminApi.post("/upload-pdf", pdfUpload.single("pdf"), asyncHandler(async (req, r
   try {
     const sourceLabel = decodeUploadedName(req.file.originalname);
     const parsedPaper = await parsePdfToPaper(req.file.path, sourceLabel);
-    const replacePaperId = String(req.body?.replacePaperId || "").trim();
-    const existingPaper = replacePaperId ? getPaper(replacePaperId) : null;
-    const paper = replacePaperId
-      ? createOrReplacePaper(
-        {
-          ...parsedPaper,
-          id: replacePaperId,
-          sortOrder: existingPaper?.sortOrder ?? parsedPaper.sortOrder,
-          quizConfig: existingPaper?.quizConfig || parsedPaper.quizConfig,
-        },
-        { replacePaperId },
-      )
-      : upsertPaper({
-        ...parsedPaper,
-        id: `${parsedPaper.id}-${crypto.randomUUID().slice(0, 8)}`,
-      });
+    const token = await writePdfPreview(parsedPaper);
 
     res.json({
-      message: replacePaperId ? "题库已用 PDF 更新" : "PDF 上传并导入成功",
-      paper,
+      message: "PDF 解析完成，请确认后导入",
+      token,
+      summary: summarizeParsedPaper(parsedPaper),
+    });
+  } catch (error) {
+    res.status(400).json({
+      message: error instanceof Error ? error.message : "PDF 识别失败",
+      summary: {
+        status: "failed",
+        questionCount: 0,
+      },
     });
   } finally {
     await fs.unlink(req.file.path).catch(() => {});
   }
+}));
+
+adminApi.post("/upload-pdf/confirm", asyncHandler(async (req, res) => {
+  const token = String(req.body?.token || "").trim();
+  const parsedPaper = await readPdfPreview(token);
+  if (!parsedPaper) {
+    res.status(404).json({ message: "PDF 解析结果已过期，请重新上传" });
+    return;
+  }
+
+  const result = saveParsedPdfPaper(parsedPaper, {
+    replacePaperId: req.body?.replacePaperId,
+    bankType: req.body?.bankType,
+    basePaperId: req.body?.basePaperId,
+  });
+  await deletePdfPreview(token);
+
+  res.json(result);
+}));
+
+adminApi.post("/upload-pdf/cancel", asyncHandler(async (req, res) => {
+  await deletePdfPreview(req.body?.token);
+  res.json({ message: "已取消 PDF 导入" });
 }));
 
 adminApi.post("/upload-image", imageUpload.single("file"), (req, res) => {

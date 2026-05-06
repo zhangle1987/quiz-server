@@ -12,6 +12,11 @@ import {
   tempUploadDir,
 } from "../config.js";
 import { hashPassword, verifyPassword } from "./adminAuth.js";
+import {
+  assignQuestionIdentities,
+  dedupeQuestionsByContent,
+  getQuestionFingerprint,
+} from "./questionIdentity.js";
 
 const DEFAULT_CONFIG = {
   defaultQuestionCount: 10,
@@ -23,6 +28,11 @@ const DEFAULT_PAPER_QUIZ_CONFIG = {
   durationMinutes: 60,
   questionCount: 20,
   passThreshold: 70,
+};
+
+const PAPER_BANK_TYPE = {
+  BASE: "base",
+  UPDATE: "update",
 };
 
 const DEFAULT_BROKER = {
@@ -67,6 +77,12 @@ function normalizeFriendStatus(value) {
   return String(value || "").trim().toLowerCase() === FRIEND_STATUS.ADDED
     ? FRIEND_STATUS.ADDED
     : FRIEND_STATUS.PENDING;
+}
+
+function normalizePaperBankType(value) {
+  return String(value || "").trim().toLowerCase() === PAPER_BANK_TYPE.UPDATE
+    ? PAPER_BANK_TYPE.UPDATE
+    : PAPER_BANK_TYPE.BASE;
 }
 
 function normalizeOption(option, index) {
@@ -128,9 +144,11 @@ function normalizeQuestion(question, index) {
       .filter((option) => option && option.text)
     : [];
 
-  return {
+  const number = Number(question.number) || index + 1;
+  const normalizedQuestion = {
     id: String(question.id || `question-${index + 1}`).trim(),
-    number: Number(question.number) || index + 1,
+    number,
+    sourceNumber: Number(question.sourceNumber || question.source_number || question.number) || number,
     reference: String(question.reference || "").trim(),
     tags: Array.isArray(question.tags)
       ? question.tags.map((tag) => String(tag).trim()).filter(Boolean)
@@ -140,15 +158,22 @@ function normalizeQuestion(question, index) {
     answer: String(question.answer || "").trim().toUpperCase(),
     explanation: String(question.explanation || "").trim(),
   };
+
+  return {
+    ...normalizedQuestion,
+    fingerprint: String(question.fingerprint || "").trim() || getQuestionFingerprint(normalizedQuestion),
+  };
 }
 
 function normalizePaper(paper) {
+  const paperId = String(paper.id || "").trim();
   const normalizedQuestions = Array.isArray(paper.questions)
     ? paper.questions.map((question, index) => normalizeQuestion(question, index))
     : [];
+  const identified = assignQuestionIdentities(paperId || "paper", normalizedQuestions);
   const quizConfig = normalizeQuizConfig(
     paper.quizConfig || paper.examConfig || paper,
-    normalizedQuestions.length,
+    identified.questions.length,
   );
   const rawSortOrder = Number(
     paper.sortOrder
@@ -156,17 +181,23 @@ function normalizePaper(paper) {
       ?? paper.displayOrder
       ?? 0,
   );
+  const bankType = normalizePaperBankType(paper.bankType ?? paper.bank_type);
+  const basePaperId = bankType === PAPER_BANK_TYPE.UPDATE
+    ? String(paper.basePaperId ?? paper.base_paper_id ?? "").trim()
+    : "";
 
   return {
-    id: String(paper.id || "").trim(),
+    id: paperId,
     title: String(paper.title || "").trim(),
     sourceFile: String(paper.sourceFile || "").trim(),
     importedAt: String(paper.importedAt || now()),
     updatedAt: String(paper.updatedAt || now()),
     sortOrder: Number.isFinite(rawSortOrder) ? Math.round(rawSortOrder) : 0,
-    questionCount: normalizedQuestions.length,
+    bankType,
+    basePaperId,
+    questionCount: identified.questions.length,
     quizConfig,
-    questions: normalizedQuestions,
+    questions: identified.questions,
   };
 }
 
@@ -178,6 +209,8 @@ function serializePaperRow(row, includeQuestions = false) {
     importedAt: row.imported_at,
     updatedAt: row.updated_at,
     sortOrder: Number(row.sort_order || 0),
+    bankType: normalizePaperBankType(row.bank_type),
+    basePaperId: row.base_paper_id || "",
     questionCount: row.question_count,
     quizConfig: normalizeQuizConfig(
       parseJson(row.quiz_config_json, DEFAULT_PAPER_QUIZ_CONFIG),
@@ -292,6 +325,8 @@ function getDb() {
         source_file TEXT NOT NULL DEFAULT '',
         imported_at TEXT NOT NULL,
         sort_order INTEGER NOT NULL DEFAULT 0,
+        bank_type TEXT NOT NULL DEFAULT 'base',
+        base_paper_id TEXT NOT NULL DEFAULT '',
         question_count INTEGER NOT NULL DEFAULT 0,
         quiz_config_json TEXT NOT NULL DEFAULT '{"durationMinutes":60,"questionCount":20,"passThreshold":70}',
         questions_json TEXT NOT NULL,
@@ -365,8 +400,9 @@ function getDb() {
 function ensurePaperSchema() {
   const db = getDb();
   const columns = db.prepare("PRAGMA table_info(papers)").all();
-  const hasQuizConfigColumn = columns.some((column) => column.name === "quiz_config_json");
-  const hasSortOrderColumn = columns.some((column) => column.name === "sort_order");
+  const columnNames = new Set(columns.map((column) => column.name));
+  const hasQuizConfigColumn = columnNames.has("quiz_config_json");
+  const hasSortOrderColumn = columnNames.has("sort_order");
   if (!hasQuizConfigColumn) {
     const defaultValue = JSON.stringify(DEFAULT_PAPER_QUIZ_CONFIG).replace(/'/g, "''");
     db.exec(`
@@ -380,6 +416,25 @@ function ensurePaperSchema() {
       ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0
     `);
   }
+  if (!columnNames.has("bank_type")) {
+    db.exec("ALTER TABLE papers ADD COLUMN bank_type TEXT NOT NULL DEFAULT 'base'");
+  }
+  if (!columnNames.has("base_paper_id")) {
+    db.exec("ALTER TABLE papers ADD COLUMN base_paper_id TEXT NOT NULL DEFAULT ''");
+  }
+
+  db.exec(`
+    UPDATE papers
+    SET bank_type = 'base'
+    WHERE bank_type IS NULL OR bank_type = '' OR bank_type NOT IN ('base', 'update');
+
+    UPDATE papers
+    SET base_paper_id = ''
+    WHERE bank_type = 'base' OR base_paper_id IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_papers_bank_type_base
+    ON papers (bank_type, base_paper_id);
+  `);
 }
 
 function ensureUserSchema() {
@@ -714,12 +769,70 @@ export function updateConfig(input = {}) {
   return nextConfig;
 }
 
-export function listPapers() {
+function attachUpdatePaperSummaries(papers = []) {
+  const db = getDb();
+  return papers.map((paper) => {
+    if (paper.bankType !== PAPER_BANK_TYPE.BASE) {
+      return paper;
+    }
+
+    const updateRow = db.prepare(`
+      SELECT *
+      FROM papers
+      WHERE bank_type = ? AND base_paper_id = ?
+      ORDER BY updated_at DESC, imported_at DESC, id DESC
+      LIMIT 1
+    `).get(PAPER_BANK_TYPE.UPDATE, paper.id);
+    const updatePaper = updateRow
+      ? {
+        ...serializePaperRow(updateRow),
+        title: paper.title,
+        sortOrder: paper.sortOrder,
+        quizConfig: paper.quizConfig,
+      }
+      : null;
+    const questionBank = getQuestionBankForBase(paper.id);
+
+    return {
+      ...paper,
+      updatePaper,
+      updateQuestionCount: updatePaper?.questionCount || 0,
+      combinedQuestionCount:
+        questionBank?.combinedQuestionCount ??
+        paper.questionCount + (updatePaper?.questionCount || 0),
+      duplicateQuestionCount: questionBank?.duplicateQuestionCount || 0,
+    };
+  });
+}
+
+export function listPapers(options = {}) {
+  const { includeUpdates = false, includeUpdateInfo = true } = options;
+  const db = getDb();
+  const rows = includeUpdates
+    ? db.prepare(`
+      SELECT *
+      FROM papers
+      ORDER BY bank_type ASC, sort_order DESC, updated_at DESC, imported_at DESC, id ASC
+    `).all()
+    : db.prepare(`
+      SELECT *
+      FROM papers
+      WHERE bank_type = ?
+      ORDER BY sort_order DESC, updated_at DESC, imported_at DESC, id ASC
+    `).all(PAPER_BANK_TYPE.BASE);
+
+  const papers = rows.map((row) => serializePaperRow(row));
+  return includeUpdateInfo && !includeUpdates
+    ? attachUpdatePaperSummaries(papers)
+    : papers;
+}
+
+export function listAllPapers() {
   const db = getDb();
   return db.prepare(`
     SELECT *
     FROM papers
-    ORDER BY sort_order DESC, updated_at DESC, imported_at DESC, id ASC
+    ORDER BY bank_type ASC, sort_order DESC, updated_at DESC, imported_at DESC, id ASC
   `).all().map((row) => serializePaperRow(row));
 }
 
@@ -733,10 +846,78 @@ export function getPaper(paperId) {
   return row ? serializePaperRow(row, true) : null;
 }
 
+export function getUpdatePaperForBase(basePaperId, includeQuestions = false) {
+  const normalizedBasePaperId = String(basePaperId || "").trim();
+  if (!normalizedBasePaperId) {
+    return null;
+  }
+
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT *
+    FROM papers
+    WHERE bank_type = ? AND base_paper_id = ?
+    ORDER BY updated_at DESC, imported_at DESC, id DESC
+    LIMIT 1
+  `).get(PAPER_BANK_TYPE.UPDATE, normalizedBasePaperId);
+
+  return row ? serializePaperRow(row, includeQuestions) : null;
+}
+
+export function getQuestionBankForBase(basePaperId) {
+  const basePaper = getPaper(basePaperId);
+  if (!basePaper || basePaper.bankType !== PAPER_BANK_TYPE.BASE) {
+    return null;
+  }
+
+  const updatePaperRaw = getUpdatePaperForBase(basePaper.id, true);
+  const updatePaper = updatePaperRaw
+    ? {
+      ...updatePaperRaw,
+      title: basePaper.title,
+      sortOrder: basePaper.sortOrder,
+      quizConfig: basePaper.quizConfig,
+    }
+    : null;
+  const baseQuestions = Array.isArray(basePaper.questions) ? basePaper.questions : [];
+  const updateQuestions = Array.isArray(updatePaper?.questions) ? updatePaper.questions : [];
+  const combined = dedupeQuestionsByContent([
+    ...updateQuestions,
+    ...baseQuestions,
+  ]);
+  const questions = combined.questions.map((question, index) => ({
+    ...question,
+    number: index + 1,
+  }));
+
+  return {
+    ...basePaper,
+    updatePaper,
+    updateQuestionCount: updateQuestions.length,
+    combinedQuestionCount: questions.length,
+    duplicateQuestionCount: combined.duplicateCount,
+    questions,
+  };
+}
+
 export function upsertPaper(paperInput) {
   const db = getDb();
   const normalizedPaper = normalizePaper(paperInput);
-  if (!normalizedPaper.id || !normalizedPaper.title || !normalizedPaper.questions.length) {
+  if (!normalizedPaper.id || !normalizedPaper.questions.length) {
+    throw new Error("题库内容不完整，无法保存");
+  }
+  if (normalizedPaper.bankType === PAPER_BANK_TYPE.UPDATE && !normalizedPaper.basePaperId) {
+    throw new Error("更新题库必须关联基础题库");
+  }
+  if (normalizedPaper.bankType === PAPER_BANK_TYPE.UPDATE) {
+    const basePaper = getPaper(normalizedPaper.basePaperId);
+    if (basePaper) {
+      normalizedPaper.title = basePaper.title;
+      normalizedPaper.sortOrder = basePaper.sortOrder;
+      normalizedPaper.quizConfig = basePaper.quizConfig;
+    }
+  }
+  if (!normalizedPaper.title) {
     throw new Error("题库内容不完整，无法保存");
   }
 
@@ -751,16 +932,20 @@ export function upsertPaper(paperInput) {
       source_file,
       imported_at,
       sort_order,
+      bank_type,
+      base_paper_id,
       question_count,
       quiz_config_json,
       questions_json,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       title = excluded.title,
       source_file = excluded.source_file,
       imported_at = excluded.imported_at,
       sort_order = excluded.sort_order,
+      bank_type = excluded.bank_type,
+      base_paper_id = excluded.base_paper_id,
       question_count = excluded.question_count,
       quiz_config_json = excluded.quiz_config_json,
       questions_json = excluded.questions_json,
@@ -771,33 +956,95 @@ export function upsertPaper(paperInput) {
     normalizedPaper.sourceFile,
     importedAt,
     normalizedPaper.sortOrder,
+    normalizedPaper.bankType,
+    normalizedPaper.basePaperId,
     normalizedPaper.questions.length,
     JSON.stringify(normalizedPaper.quizConfig),
     JSON.stringify(normalizedPaper.questions),
     updatedAt,
   );
 
+  if (normalizedPaper.bankType === PAPER_BANK_TYPE.BASE) {
+    db.prepare(`
+      UPDATE papers
+      SET
+        title = ?,
+        sort_order = ?,
+        quiz_config_json = ?,
+        updated_at = ?
+      WHERE bank_type = ? AND base_paper_id = ?
+    `).run(
+      normalizedPaper.title,
+      normalizedPaper.sortOrder,
+      JSON.stringify(normalizedPaper.quizConfig),
+      updatedAt,
+      PAPER_BANK_TYPE.UPDATE,
+      normalizedPaper.id,
+    );
+  }
+
   return getPaper(normalizedPaper.id);
 }
 
 export function createOrReplacePaper(paperInput, options = {}) {
-  const normalizedPaper = normalizePaper(paperInput);
+  const normalizedPaper = normalizePaper({
+    ...paperInput,
+    bankType: PAPER_BANK_TYPE.BASE,
+    basePaperId: "",
+  });
   if (options.replacePaperId) {
     normalizedPaper.id = String(options.replacePaperId).trim();
-    normalizedPaper.questions = normalizedPaper.questions.map((question, index) => ({
-      ...question,
-      id: `${normalizedPaper.id}-q${question.number || index + 1}`,
-    }));
+    normalizedPaper.questions = assignQuestionIdentities(
+      normalizedPaper.id,
+      normalizedPaper.questions,
+    ).questions;
     normalizedPaper.questionCount = normalizedPaper.questions.length;
+    normalizedPaper.quizConfig = normalizeQuizConfig(
+      normalizedPaper.quizConfig,
+      normalizedPaper.questions.length,
+    );
   }
   return upsertPaper(normalizedPaper);
+}
+
+export function createOrReplaceUpdatePaper(basePaperId, paperInput) {
+  const normalizedBasePaperId = String(basePaperId || "").trim();
+  const basePaper = getPaper(normalizedBasePaperId);
+  if (!basePaper || basePaper.bankType !== PAPER_BANK_TYPE.BASE) {
+    throw new Error("请先选择有效的基础题库");
+  }
+
+  const existingUpdatePaper = getUpdatePaperForBase(normalizedBasePaperId, true);
+  const updatePaperId = existingUpdatePaper?.id || `${normalizedBasePaperId}-update`;
+  const normalizedPaper = normalizePaper({
+    ...paperInput,
+    id: updatePaperId,
+    title: basePaper.title,
+    sortOrder: basePaper.sortOrder,
+    quizConfig: basePaper.quizConfig,
+    bankType: PAPER_BANK_TYPE.UPDATE,
+    basePaperId: normalizedBasePaperId,
+  });
+
+  const savedPaper = upsertPaper(normalizedPaper);
+  const db = getDb();
+  db.prepare(`
+    DELETE FROM papers
+    WHERE bank_type = ? AND base_paper_id = ? AND id <> ?
+  `).run(PAPER_BANK_TYPE.UPDATE, normalizedBasePaperId, updatePaperId);
+
+  return savedPaper;
 }
 
 export function replacePapers(papers = []) {
   return runInTransaction((db) => {
     db.prepare("DELETE FROM papers").run();
     for (const paper of papers) {
-      const normalizedPaper = normalizePaper(paper);
+      const normalizedPaper = normalizePaper({
+        ...paper,
+        bankType: PAPER_BANK_TYPE.BASE,
+        basePaperId: "",
+      });
       if (!normalizedPaper.id || !normalizedPaper.title || !normalizedPaper.questions.length) {
         continue;
       }
@@ -809,17 +1056,21 @@ export function replacePapers(papers = []) {
           source_file,
           imported_at,
           sort_order,
+          bank_type,
+          base_paper_id,
           question_count,
           quiz_config_json,
           questions_json,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         normalizedPaper.id,
         normalizedPaper.title,
         normalizedPaper.sourceFile,
         normalizedPaper.importedAt,
         normalizedPaper.sortOrder,
+        normalizedPaper.bankType,
+        normalizedPaper.basePaperId,
         normalizedPaper.questions.length,
         JSON.stringify(normalizedPaper.quizConfig),
         JSON.stringify(normalizedPaper.questions),
@@ -841,6 +1092,8 @@ export function updatePaper(paperId, updates = {}) {
     ...existing,
     ...updates,
     id: existing.id,
+    bankType: existing.bankType,
+    basePaperId: existing.basePaperId,
     sourceFile: updates.sourceFile ?? existing.sourceFile,
     questions: Array.isArray(updates.questions) ? updates.questions : existing.questions,
   };
@@ -849,9 +1102,22 @@ export function updatePaper(paperId, updates = {}) {
 }
 
 export function deletePaper(paperId) {
-  const db = getDb();
-  const result = db.prepare("DELETE FROM papers WHERE id = ?").run(String(paperId));
-  return result.changes > 0;
+  return runInTransaction((db) => {
+    const existing = db.prepare("SELECT * FROM papers WHERE id = ?").get(String(paperId));
+    if (!existing) {
+      return false;
+    }
+
+    if (normalizePaperBankType(existing.bank_type) === PAPER_BANK_TYPE.BASE) {
+      db.prepare("DELETE FROM papers WHERE bank_type = ? AND base_paper_id = ?").run(
+        PAPER_BANK_TYPE.UPDATE,
+        String(paperId),
+      );
+    }
+
+    const result = db.prepare("DELETE FROM papers WHERE id = ?").run(String(paperId));
+    return result.changes > 0;
+  });
 }
 
 export function listBrokers() {

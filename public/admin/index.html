@@ -34,7 +34,7 @@
         </div>
         <div class="summary-row">
           <div class="summary-card">
-            <div class="summary-card__label">题库数</div>
+            <div class="summary-card__label">基础题库数</div>
             <div id="paper-count" class="summary-card__value">0</div>
           </div>
           <div class="summary-card">
@@ -51,15 +51,11 @@
       <section id="section-papers" class="section section--active">
         <div class="section-head">
           <div>
-            <h2 class="section-title">题库列表</h2>
-            <p class="section-desc">题库数量很少，直接全部列出。右侧可编辑完整 JSON，也支持上传 PDF 覆盖当前题库。考试配置通过上方表单维护，保存后直接写入数据库。</p>
+            <h2 class="section-title">基础题库列表</h2>
+            <p class="section-desc">小程序仍使用基础题库 ID。更新题库关联到当前基础题库，抽题时由后端合并两边题目后随机抽取。</p>
           </div>
           <div class="button-row">
-            <button id="paper-new" class="ghost-button" type="button">新增题库</button>
-            <label class="primary-button file-button">
-              <span>上传 PDF</span>
-              <input id="paper-upload" type="file" accept="application/pdf" />
-            </label>
+            <button id="paper-new" class="ghost-button" type="button">新增基础题库</button>
             <button id="paper-import-demos" class="ghost-button" type="button">重导示例</button>
           </div>
         </div>
@@ -75,7 +71,12 @@
               </div>
             </div>
             <div class="paper-config-panel">
-              <div class="paper-config-panel__title">考试配置</div>
+              <div class="paper-config-panel__title">题库信息</div>
+              <div id="paper-update-info" class="inline-note paper-update-info">当前未上传更新题库</div>
+              <label class="form-field paper-title-field">
+                <span>题库名称</span>
+                <input id="paper-title-input" type="text" />
+              </label>
               <div class="paper-config-grid">
                 <label class="form-field">
                   <span>排序值</span>
@@ -93,6 +94,113 @@
                   <span>合格线（%）</span>
                   <input id="paper-pass-threshold" type="number" min="0" max="100" step="1" />
                 </label>
+              </div>
+            </div>
+            <div class="paper-bank-switch" aria-label="题库类型">
+              <div class="paper-bank-switch__item paper-bank-switch__item--active" data-bank-type="base">
+                <button id="paper-bank-base" class="paper-bank-switch__select" type="button" data-bank-type="base">
+                  <span>基础题库</span>
+                  <strong id="paper-bank-base-count">0 题</strong>
+                </button>
+                <label class="ghost-button file-button paper-bank-switch__upload">
+                  <span>上传基础 PDF</span>
+                  <input id="paper-upload" type="file" accept="application/pdf" />
+                </label>
+              </div>
+              <div class="paper-bank-switch__item" data-bank-type="update">
+                <button id="paper-bank-update" class="paper-bank-switch__select" type="button" data-bank-type="update">
+                  <span>更新题库</span>
+                  <strong id="paper-bank-update-count">未上传</strong>
+                </button>
+                <label class="ghost-button file-button paper-bank-switch__upload">
+                  <span>上传更新 PDF</span>
+                  <input id="paper-update-upload" type="file" accept="application/pdf" />
+                </label>
+              </div>
+            </div>
+            <div class="paper-view-toolbar">
+              <div class="segmented-control" aria-label="题库展示方式">
+                <button id="paper-view-list" class="segmented-control__item segmented-control__item--active" type="button" data-view-mode="list">分页列表</button>
+                <button id="paper-view-json" class="segmented-control__item" type="button" data-view-mode="json">JSON</button>
+              </div>
+              <div id="paper-question-summary" class="inline-note">共 0 题</div>
+            </div>
+            <div id="paper-question-list-view" class="paper-question-list-view">
+              <div class="paper-question-grid">
+                <div class="paper-question-list">
+                  <div class="table-shell table-shell--compact">
+                    <table class="data-table data-table--compact">
+                      <thead>
+                        <tr>
+                          <th>序号</th>
+                          <th>题目</th>
+                          <th>答案</th>
+                        </tr>
+                      </thead>
+                      <tbody id="paper-question-table-body"></tbody>
+                    </table>
+                  </div>
+                  <div class="pagination-bar pagination-bar--compact">
+                    <button id="paper-question-prev-page" class="ghost-button" type="button">上一页</button>
+                    <div id="paper-question-page-current" class="pagination-bar__text">第 1 / 1 页</div>
+                    <button id="paper-question-next-page" class="ghost-button" type="button">下一页</button>
+                  </div>
+                </div>
+                <div class="question-editor">
+                  <div class="question-editor__head">
+                    <div id="question-editor-title" class="question-editor__title">题目编辑</div>
+                  </div>
+                  <div class="question-editor__form">
+                    <div class="form-grid form-grid--two">
+                      <label class="form-field">
+                        <span>参考章节</span>
+                        <input id="question-reference" type="text" />
+                      </label>
+                      <label class="form-field">
+                        <span>标签</span>
+                        <input id="question-tags" type="text" placeholder="用逗号分隔" />
+                      </label>
+                    </div>
+                    <label class="form-field">
+                      <span>题干</span>
+                      <textarea id="question-stem" class="text-editor" rows="4"></textarea>
+                    </label>
+                    <div class="question-options-grid">
+                      <label class="form-field">
+                        <span>选项 A</span>
+                        <textarea id="question-option-a" class="text-editor" rows="2"></textarea>
+                      </label>
+                      <label class="form-field">
+                        <span>选项 B</span>
+                        <textarea id="question-option-b" class="text-editor" rows="2"></textarea>
+                      </label>
+                      <label class="form-field">
+                        <span>选项 C</span>
+                        <textarea id="question-option-c" class="text-editor" rows="2"></textarea>
+                      </label>
+                      <label class="form-field">
+                        <span>选项 D</span>
+                        <textarea id="question-option-d" class="text-editor" rows="2"></textarea>
+                      </label>
+                    </div>
+                    <label class="form-field">
+                      <span>正确答案</span>
+                      <select id="question-answer">
+                        <option value="A">A</option>
+                        <option value="B">B</option>
+                        <option value="C">C</option>
+                        <option value="D">D</option>
+                      </select>
+                    </label>
+                    <label class="form-field">
+                      <span>解析</span>
+                      <textarea id="question-explanation" class="text-editor" rows="4"></textarea>
+                    </label>
+                    <div class="button-row">
+                      <button id="question-apply" class="primary-button" type="button">更新当前题目</button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
             <textarea id="paper-json" class="json-editor" spellcheck="false"></textarea>
@@ -284,6 +392,25 @@
               <div class="attempt-panel__title">最近答题记录</div>
             </div>
             <div id="user-attempt-list" class="attempt-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="pdf-preview-modal" class="modal">
+      <div class="modal__backdrop" data-action="close-pdf-preview"></div>
+      <div class="modal__dialog">
+        <div class="modal__head">
+          <div>
+            <div class="modal__eyebrow">PDF 导入确认</div>
+            <div id="pdf-preview-title" class="modal__title">解析结果</div>
+          </div>
+          <button id="pdf-preview-cancel" class="ghost-button" type="button">取消</button>
+        </div>
+        <div class="modal__body">
+          <div id="pdf-preview-summary" class="pdf-preview-summary"></div>
+          <div class="button-row">
+            <button id="pdf-preview-confirm" class="primary-button" type="button">确认导入</button>
           </div>
         </div>
       </div>
