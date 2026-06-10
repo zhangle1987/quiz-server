@@ -57,18 +57,21 @@ function classifyColumn(x) {
   return "answer";
 }
 
-function parseMeta(metaText) {
-  const cleaned = metaText
+function normalizeMetaText(metaText) {
+  return compactText(metaText || "")
     .replace(/[©]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^\((熱門|最新)(?=\s+\d)/, "($1)");
+    .replace(/^\.\s*/, "")
+    .replace(/^\((熱門|最新)(?=\s+\d)/, "($1)")
+    .replace(/^(熱門|最新)\s+(?=\d)/, "($1) ");
+}
+
+function parseMeta(metaText) {
+  const cleaned = normalizeMetaText(metaText);
   if (!cleaned) {
     return null;
   }
 
-  const normalized = cleaned.replace(/^\.\s*/, "");
-  const match = normalized.match(/^((?:\([^)]+\)\s*)*)(\d+)(?:\s+(.+))?$/);
+  const match = cleaned.match(/^((?:\([^)]+\)\s*)*)(\d+)(?:\s+(.+))?$/);
   if (!match) {
     return null;
   }
@@ -89,9 +92,7 @@ function parseMeta(metaText) {
 }
 
 function parseReferenceFragment(metaText, { allowContinuation = false } = {}) {
-  const normalized = compactText(metaText || "")
-    .replace(/[©]/g, "")
-    .replace(/^\.\s*/, "");
+  const normalized = normalizeMetaText(metaText);
   if (!normalized) {
     return {
       reference: "",
